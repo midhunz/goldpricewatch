@@ -1,0 +1,39 @@
+# System
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Node / Frontend
+node_modules/
+.next/
+out/
+build/
+dist/
+coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Python / Backend
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.venv/
+.env
+
+# Docker / Volumes
+postgres_data/
+caddy_data/
+caddy_config/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project specific
+backend/news_scraper.log

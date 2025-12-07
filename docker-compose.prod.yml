@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  frontend:
+    image: midhunpottammal/gold-price-watch-frontend:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://goldpricewatch.com:8000
+    depends_on:
+      - backend
+    restart: always
+
+  backend:
+    image: midhunpottammal/gold-price-watch-backend:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/goldrate
+    depends_on:
+      - db
+    restart: always
+
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=goldrate
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - DOMAIN_NAME=${DOMAIN_NAME:-goldpricewatch.com}
+      - ACME_EMAIL=${ACME_EMAIL:-admin@example.com}
+    depends_on:
+      - frontend
+      - backend
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
