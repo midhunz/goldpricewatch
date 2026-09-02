@@ -1,7 +1,6 @@
 fastapi
 uvicorn
 sqlalchemy
-psycopg2-binary
 python-dotenv
 pydantic
 pydantic-settings
@@ -10,3 +9,7 @@ apscheduler
 beautifulsoup4
 lxml
 feedparser
+psycopg2-binary
+vaderSentiment
+openpyxl
+numpy

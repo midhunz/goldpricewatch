@@ -37,3 +37,5 @@ caddy_config/
 
 # Project specific
 backend/news_scraper.log
+backend/data/
+prod-extract/

@@ -1,0 +1,30 @@
+version: '3.8'
+
+# Runs the exact images currently deployed in production (pulled from the
+# server via `docker save`/`docker load`), against a local copy of the
+# production SQLite data, for local parity testing.
+
+services:
+  frontend:
+    image: midhunpottammal/gold-price-watch-frontend:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - SSR_API_URL=http://backend:8000
+      - NEXT_PUBLIC_API_KEY=${NEXT_PUBLIC_API_KEY:-}
+      - SSR_API_KEY=${SSR_API_KEY:-}
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL:-}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+    depends_on:
+      - backend
+
+  backend:
+    image: midhunpottammal/gold-price-watch-backend:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:////app/data/goldrate.db
+      - FRED_API_KEY=${FRED_API_KEY:-}
+    volumes:
+      - ./backend/data:/app/data

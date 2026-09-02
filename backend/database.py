@@ -1,11 +1,30 @@
+
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost:5432/goldrate")
+# Use DATABASE_URL from environment (never commit real credentials to git)
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable is required")
 
-engine = create_engine(DATABASE_URL)
+if DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+else:
+    # Optimized pool for remote Supabase:
+    #  - pool_size=10: keep 10 warm connections (avoids reconnect latency)
+    #  - max_overflow=5: allow up to 15 total under burst
+    #  - pool_recycle=300: recycle connections every 5 min (Supabase idle timeout)
+    #  - pool_pre_ping=True: verify connection is alive before use
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_size=10,
+        max_overflow=5,
+        pool_recycle=300,
+    )
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
