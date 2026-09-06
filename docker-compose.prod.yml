@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   frontend:
-    image: midhunpottammal/gold-price-watch-frontend:latest
+    image: midhunpottammal/gold-price-watch-frontend:${IMAGE_TAG:-latest}
     ports:
       - "3000:3000"
     environment:
@@ -12,7 +12,7 @@ services:
     restart: always
 
   backend:
-    image: midhunpottammal/gold-price-watch-backend:latest
+    image: midhunpottammal/gold-price-watch-backend:${IMAGE_TAG:-latest}
     ports:
       - "8000:8000"
     environment:
@@ -41,6 +41,9 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
+      # Serves /gold-rates/* directly from the checkout, so those pages ship on a
+      # git pull without rebuilding the frontend image. See the Caddyfile.
+      - ./frontend/public:/srv/static:ro
       - caddy_data:/data
       - caddy_config:/config
     environment:

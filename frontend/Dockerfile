@@ -14,6 +14,22 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
+# NEXT_PUBLIC_* values are inlined into the client bundle at build time, so they
+# have to be present here -- setting them at runtime in compose only reaches
+# server-side code. Without this ARG the --build-arg passed by CI and
+# build_and_push.sh was silently discarded, and the client bundle fell back to
+# the `|| "http://localhost:8000"` default in src/hooks/useGoldRates.ts, pointing
+# every client-side fetch at the visitor's own machine.
+ARG NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+
+# Fail the build rather than shipping a bundle that calls localhost.
+RUN if [ -z "$NEXT_PUBLIC_API_URL" ]; then \
+      echo "ERROR: NEXT_PUBLIC_API_URL build-arg is required." >&2; \
+      echo "       Without it the client bundle falls back to http://localhost:8000." >&2; \
+      exit 1; \
+    fi
+
 # Next.js collects completely anonymous telemetry data about general usage.
 # Learn more here: https://nextjs.org/telemetry
 # Uncomment the following line in case you want to disable telemetry during the build.

@@ -3,10 +3,39 @@
     email {$ACME_EMAIL}
 }
 
+# Canonical host is the apex, non-www (matches the canonical tags and sitemap).
+#
+# SEO_TASKS T0.4 found http://www -> https://www -> https://apex, a 2-hop chain.
+# Claiming both schemes for the www host here collapses it to a single 301:
+# without the http:// entry, Caddy's automatic HTTPS redirect fires first and
+# adds the extra hop. Keep this block ahead of the apex block.
+#
+# NOTE: the deployed Caddyfile already redirects www (Caddy returns a valid 301
+# with a valid certificate for www), but that block is not in this file — this
+# repo's config has drifted from production. Reconcile before deploying.
+http://www.{$DOMAIN_NAME}, https://www.{$DOMAIN_NAME} {
+    redir https://{$DOMAIN_NAME}{uri} permanent
+}
+
 {$DOMAIN_NAME} {
     # Backend API
     handle /api/* {
         reverse_proxy backend:8000
+    }
+
+    # Static state rate pages, served straight from the repo checkout on the
+    # server (mounted read-only in docker-compose.prod.yml).
+    #
+    # These deliberately do NOT come from the frontend image. The frontend source
+    # in this repo covers only 6 of the 37 live routes, so rebuilding that image
+    # would 404 28 pages (see docs/BLOCKED.md). Serving these files from the
+    # checkout lets fixes to them ship on a `git pull` alone, with no image build.
+    #
+    # `handle` blocks match in order, so this wins over the catch-all below and
+    # the stale copies still baked into the frontend image are never reached.
+    handle /gold-rates/* {
+        root * /srv/static
+        file_server
     }
 
     # Frontend Next.js
