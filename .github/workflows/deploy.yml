@@ -214,6 +214,126 @@ jobs:
           strip_components: 2
           overwrite: true
 
+      # The server owns its config, so this does not overwrite it -- it adds the
+      # two things the static pages need, only if they are absent, and validates
+      # both files against a throwaway container BEFORE the running stack is
+      # touched. Any failure restores the backups and exits non-zero.
+      #
+      # Needed because production serves /gold-rates/*.html from the stale copies
+      # baked into the frontend image, which cannot be rebuilt (docs/BLOCKED.md).
+      # A Caddy handler rooted at the uploaded files takes precedence over the
+      # catch-all proxy, so the clean pages win without any image build.
+      - name: Ensure server serves the uploaded static pages
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script_stop: true
+          envs: DEPLOY_PATH
+          script: |
+            set -euo pipefail
+            cd "$DEPLOY_PATH"
+
+            COMPOSE=docker-compose.yaml
+            [ -f "$COMPOSE" ] || COMPOSE=docker-compose.yml
+            if [ ! -f "$COMPOSE" ]; then
+              echo "ERROR: no compose file in $DEPLOY_PATH" >&2
+              exit 1
+            fi
+            echo "Using compose file: $COMPOSE"
+
+            echo "--- current /gold-rates handling ---"
+            grep -n -B2 -A6 'gold-rates' Caddyfile || echo "(no gold-rates handler present)"
+            echo "--- current caddy volumes ---"
+            grep -n -A15 'caddy:' "$COMPOSE" | grep -E 'volumes:|- \./|srv' || true
+
+            STAMP=$(date +%Y%m%d-%H%M%S)
+            cp Caddyfile "Caddyfile.bak.$STAMP"
+            cp "$COMPOSE" "$COMPOSE.bak.$STAMP"
+            echo "Backups: Caddyfile.bak.$STAMP  $COMPOSE.bak.$STAMP"
+
+            # Armed before the first edit: any failure below -- a refused awk, a
+            # rejected config, a failed restart -- puts both files back exactly
+            # as they were. Without this an aborted run could leave the compose
+            # file patched and the Caddyfile not.
+            restore() {
+              echo "::error::Server config change failed -- restoring backups."
+              cp "Caddyfile.bak.$STAMP" Caddyfile
+              cp "$COMPOSE.bak.$STAMP" "$COMPOSE"
+              # If caddy was already restarted on the bad config, put it back on
+              # the good one. Leaving the site down is worse than not fixing it.
+              docker compose -f "$COMPOSE" up -d caddy || true
+            }
+            trap restore ERR
+
+            changed=0
+
+            # 1. Mount the uploaded pages into the caddy container.
+            if grep -q '/srv/static' "$COMPOSE"; then
+              echo "compose: /srv/static mount already present, leaving alone"
+            else
+              sed -i 's#^\( *\)- \./Caddyfile:/etc/caddy/Caddyfile\(.*\)$#&\n\1- ./static:/srv/static:ro#' "$COMPOSE"
+              if grep -q '/srv/static' "$COMPOSE"; then
+                echo "compose: added ./static:/srv/static:ro"
+                changed=1
+              else
+                echo "ERROR: could not add the static mount automatically." >&2
+                echo "       No '- ./Caddyfile:/etc/caddy/Caddyfile' line was found." >&2
+                exit 1
+              fi
+            fi
+
+            # 2. Serve /gold-rates/* from that mount, ahead of the catch-all.
+            if grep -q 'handle /gold-rates/\*' Caddyfile; then
+              echo "Caddyfile: a /gold-rates handler already exists, leaving alone"
+            else
+              awk '
+                !ins && /handle[[:space:]]+\/\*[[:space:]]*\{/ {
+                  print "    handle /gold-rates/* {"
+                  print "        root * /srv/static"
+                  print "        file_server"
+                  print "    }"
+                  print ""
+                  ins = 1
+                }
+                { print }
+                END { if (!ins) exit 3 }
+              ' Caddyfile > Caddyfile.new
+              echo "Caddyfile: inserted handle /gold-rates/* before the catch-all"
+              mv Caddyfile.new Caddyfile
+              changed=1
+            fi
+
+            if [ "$changed" -eq 0 ]; then
+              echo "Server already configured; nothing to change."
+              exit 0
+            fi
+
+            # Validate both files in a throwaway container before the running
+            # stack sees them. The ERR trap restores on any failure here.
+            docker compose -f "$COMPOSE" config -q
+            docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine \
+              caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
+
+            echo "Both files validate. Applying."
+            docker compose -f "$COMPOSE" up -d caddy
+
+            # Confirm Caddy actually serves the uploaded file, not the stale one.
+            sleep 5
+            if docker compose -f "$COMPOSE" exec -T caddy \
+                 test -f /srv/static/gold-rates/kerala.html; then
+              echo "Mount confirmed: /srv/static/gold-rates/kerala.html is visible to Caddy."
+            else
+              echo "::error::The uploaded pages are not visible inside the caddy container."
+              false
+            fi
+
+            trap - ERR
+            echo "Server configured."
+        env:
+          DEPLOY_PATH: ${{ env.DEPLOY_PATH }}
+
       - name: Pull and restart
         uses: appleboy/ssh-action@v1
         with:
