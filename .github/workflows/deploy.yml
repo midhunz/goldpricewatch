@@ -1,0 +1,279 @@
+name: Deploy
+
+# What actually ships, and why it is split up
+# -------------------------------------------
+# backend image        always, when its tests pass
+# /gold-rates/*.html   always, via a git pull on the server (Caddy serves them
+#                      straight from the checkout -- no image build involved)
+# frontend image       ONLY when scripts/check_frontend_routes.py passes AND the
+#                      run was started manually with deploy_frontend=true
+#
+# The frontend is gated because the source in this repo covers 6 of the 37 routes
+# production serves. Building and shipping it would 404 the other 28 -- every
+# country, city and emirate page, plus /about and /contact. See docs/BLOCKED.md.
+#
+# Required repository secrets:
+#   DOCKERHUB_USERNAME  DOCKERHUB_TOKEN
+#   DROPLET_HOST        DROPLET_USER      DROPLET_SSH_KEY
+# Required repository variables:
+#   HEALTHCHECK_URL       e.g. https://goldpricewatch.com/api/health
+#   NEXT_PUBLIC_API_URL   e.g. https://goldpricewatch.com/api   (frontend builds only)
+# Required environment:
+#   a GitHub Environment named "production" must exist (add reviewers there if
+#   you want deploys to require approval).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_frontend:
+        description: "Also rebuild and deploy the frontend image (blocked unless the route guard passes)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  REGISTRY_NAMESPACE: midhunpottammal
+  BACKEND_IMAGE: gold-price-watch-backend
+  FRONTEND_IMAGE: gold-price-watch-frontend
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Gate. Nothing ships if the data or SEO guardrails fail.
+  # ---------------------------------------------------------------------------
+  guardrails:
+    name: Guardrails
+    runs-on: ubuntu-latest
+    outputs:
+      frontend_safe: ${{ steps.routes.outputs.safe }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Price sanity (T7.1) and SEO regressions (T7.2). A hardcoded price or a
+      # missing noindex in the static rate pages stops the deploy here.
+      - name: Data + SEO guardrail tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Frontend route completeness
+        id: routes
+        run: |
+          if python scripts/check_frontend_routes.py; then
+            echo "safe=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "safe=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Frontend deploy blocked"
+              echo ""
+              echo "The frontend source in this repo does not produce every route"
+              echo "production serves, so its image will not be rebuilt or shipped."
+              echo "The backend and the static \`/gold-rates\` pages deploy as normal."
+              echo ""
+              echo "See \`docs/BLOCKED.md\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Verify deploy configuration is present
+        env:
+          DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
+          DROPLET_USER: ${{ secrets.DROPLET_USER }}
+          DROPLET_SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          HEALTHCHECK_URL: ${{ vars.HEALTHCHECK_URL }}
+        run: |
+          missing=""
+          for name in DROPLET_HOST DROPLET_USER DROPLET_SSH_KEY \
+                      DOCKERHUB_USERNAME DOCKERHUB_TOKEN HEALTHCHECK_URL; do
+            if [ -z "${!name}" ]; then
+              missing="$missing $name"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required secrets/variables:$missing"
+            echo "Set them under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          echo "All required secrets and variables are set."
+
+  # ---------------------------------------------------------------------------
+  # Backend image. Its source IS complete in this repo, so this is safe.
+  # ---------------------------------------------------------------------------
+  build-backend:
+    name: Build & push backend
+    needs: guardrails
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY_NAMESPACE }}/${{ env.BACKEND_IMAGE }}:latest
+            ${{ env.REGISTRY_NAMESPACE }}/${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Frontend image. Double-gated: the route guard must pass AND the run must have
+  # been dispatched manually asking for it.
+  # ---------------------------------------------------------------------------
+  build-frontend:
+    name: Build & push frontend
+    needs: guardrails
+    if: >-
+      needs.guardrails.outputs.frontend_safe == 'true' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.deploy_frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      # NEXT_PUBLIC_* is inlined into the client bundle at build time. If it is
+      # empty the bundle falls back to http://localhost:8000 and every
+      # client-side fetch in the deployed app hits the visitor's own machine.
+      - name: Require NEXT_PUBLIC_API_URL
+        run: |
+          if [ -z "${{ vars.NEXT_PUBLIC_API_URL }}" ]; then
+            echo "::error::NEXT_PUBLIC_API_URL is not set; the build would bake in a localhost fallback."
+            exit 1
+          fi
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}
+          tags: |
+            ${{ env.REGISTRY_NAMESPACE }}/${{ env.FRONTEND_IMAGE }}:latest
+            ${{ env.REGISTRY_NAMESPACE }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Ship it. Pulls the checkout (static pages, Caddyfile, compose) and restarts.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to droplet
+    needs: [guardrails, build-backend]
+    # build-frontend is usually skipped; only fail here if it actually failed.
+    if: >-
+      always() &&
+      needs.build-backend.result == 'success' &&
+      !contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Pull & restart
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script_stop: true
+          envs: IMAGE_TAG
+          script: |
+            set -euo pipefail
+            cd ~/app
+
+            # Remember what is running now so the smoke test can roll back to it.
+            if [ -f .deployed_tag ]; then
+              cp .deployed_tag .previous_tag
+            else
+              echo latest > .previous_tag
+            fi
+
+            git fetch --all
+            git reset --hard origin/main
+
+            # The backend image is pinned to this commit. The frontend is NOT
+            # rebuilt here, so compose keeps whatever frontend tag is already
+            # deployed -- see the header of this workflow.
+            echo "$IMAGE_TAG" > .deployed_tag
+            export IMAGE_TAG
+
+            docker compose -f docker-compose.prod.yml pull backend
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            docker image prune -f
+        env:
+          IMAGE_TAG: ${{ needs.build-backend.outputs.tag }}
+
+      - name: Smoke test
+        id: smoke
+        run: |
+          for i in $(seq 1 12); do
+            if curl -fsS --max-time 10 "${{ vars.HEALTHCHECK_URL }}"; then
+              echo "Health check passed on attempt $i"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+          echo "::error::Health check never passed"
+          exit 1
+
+      # Verifies the thing this deploy is actually for: the static rate pages are
+      # being served from the checkout, are noindex, and carry no hardcoded price.
+      - name: Verify static rate pages
+        run: |
+          url="https://goldpricewatch.com/gold-rates/kerala.html"
+          body=$(curl -fsS --max-time 15 "$url")
+          fail=0
+          if ! printf '%s' "$body" | grep -q 'content="noindex,nofollow"'; then
+            echo "::error::$url is missing its noindex directive"; fail=1
+          fi
+          if printf '%s' "$body" | grep -qE '₹[0-9]'; then
+            echo "::error::$url is serving a hardcoded rupee figure"; fail=1
+          fi
+          if [ "$fail" -eq 0 ]; then
+            echo "Static rate pages verified."
+          fi
+          exit "$fail"
+
+      - name: Roll back on failure
+        if: failure()
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd ~/app
+            PREV=$(cat .previous_tag 2>/dev/null || echo latest)
+            echo "Rolling back to $PREV"
+            export IMAGE_TAG="$PREV"
+            git reset --hard HEAD@{1} || true
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            echo "$PREV" > .deployed_tag

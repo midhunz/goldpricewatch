@@ -1,0 +1,43 @@
+# Routes the production site serves, captured from the running build
+# (.next/app-path-routes-manifest.json) on 5 Sep 2026.
+#
+# scripts/check_frontend_routes.py fails the build if frontend/src no longer
+# produces every route listed here. This exists because the frontend source in
+# this repo covers only a fraction of them: deploying a build from it would 404
+# the rest. See docs/BLOCKED.md.
+#
+# When a route is legitimately removed, delete its line in the same commit.
+/
+/about
+/abu-dhabi-gold-prices
+/account
+/admin
+/ajman-gold-prices
+/bahrain-gold-prices
+/bangalore-gold-prices
+/calculator
+/chennai-gold-prices
+/contact
+/dubai-gold-prices
+/geopolitical-gold-impact
+/gold-news-today
+/gold-news-today/[slug]
+/gold-prediction
+/hyderabad-gold-prices
+/india-gold-prices
+/kuwait-gold-prices
+/login
+/mumbai-gold-prices
+/news
+/oman-gold-prices
+/portfolio
+/privacy
+/pune-gold-prices
+/qatar-gold-prices
+/saudi-arabia-gold-prices
+/sharjah-gold-prices
+/signup
+/terms
+/trends
+/uae-gold-prices
+/why-gold-price-is-increasing-2026

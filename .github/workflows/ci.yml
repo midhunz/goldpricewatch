@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (lint + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: 1
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+
+  backend:
+    name: Backend (lint + import check)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      - name: Compile all sources
+        run: python -m compileall -q .
+
+      - name: Lint (errors only)
+        run: |
+          pip install ruff
+          ruff check --select E9,F63,F7,F82 .
+
+      - name: Import app
+        run: python -c "import main"
+        env:
+          DATABASE_URL: sqlite:///./ci.db
+
+  guardrails:
+    name: Data + SEO guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Stdlib unittest only — no dependencies, so nothing is added to the
+      # production image for the sake of tests.
+      #
+      # Enforces (see SEO_TASKS.md):
+      #   T1.1  no hardcoded price may ship in a static rate page
+      #   T1.2  a missing prior close yields null, never 0.00
+      #   T1.4  no unsubstantiated freshness claim
+      #   T3.1  title <= 60 chars, brand not doubled
+      #   T3.2  meta description <= 155 chars
+      #   T3.3  og:image absolute and not a 404; full Twitter card set
+      #   T3.6  one H1 per page, no skipped heading level
+      #   T7.1  price sanity: no zero prices, 22K/24K ratio band,
+      #         state-vs-national divergence, feed staleness
+      #   T7.2  canonical present, absolute, self-referencing
+      - name: Run guardrail tests
+        run: python -m unittest discover -s tests -v
+
+      # Informational here so CI is not permanently red while the frontend source
+      # is missing. The deploy workflow runs this same check as a hard gate.
+      - name: Frontend route completeness (informational)
+        run: python scripts/check_frontend_routes.py --summary
+
+  docker:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: false
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: false
+          build-args: |
+            NEXT_PUBLIC_API_URL=https://goldpricewatch.com/api
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
