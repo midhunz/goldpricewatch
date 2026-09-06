@@ -1,6 +1,6 @@
 {
     # Global options
-    email {$ACME_EMAIL}
+    email iris09147@gmail.com
 }
 
 # Canonical host is the apex, non-www (matches the canonical tags and sitemap).
