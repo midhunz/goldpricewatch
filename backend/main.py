@@ -21,7 +21,7 @@ from models import (
     ExternalFactorsResult,
     GeopoliticalEvent, GeoRiskResult, GeoBacktestResult, TrainedModel
 )
-from tasks import scrape_and_store_rates, run_ai_calculations_task, scrape_news_task
+from tasks import run_ai_calculations_task, scrape_news_task
 from prediction import predict_future_prices
 from export import export_rates_to_csv, export_news_to_csv
 from model_trainer import (
@@ -30,6 +30,14 @@ from model_trainer import (
     compute_feature_drift,
 )
 from drift import get_concept_drift_status
+from rate_utils import (
+    canonical_purity,
+    parse_price,
+    check_purity_ratio,
+    is_feed_stale,
+    feed_age,
+    FEED_STALE_AFTER,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -269,9 +277,10 @@ scheduler = BackgroundScheduler()
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting scheduler...")
-    # Run scraper immediately on startup (in background to avoid blocking API)
-    scheduler.add_job(run_scrape_job, 'date', run_date=datetime.now() + timedelta(seconds=5))
-    
+    # NOTE: the gold rate scrape has moved out of this repo entirely.
+    # It runs on Prefect Cloud from github.com/midhunz/gold-price-scraper
+    # and writes to Supabase. This API only reads gold_rates now.
+
     # Run news scraper on startup (after 10 seconds)
     scheduler.add_job(run_news_scrape_job, 'date', run_date=datetime.now() + timedelta(seconds=10))
     
@@ -280,9 +289,6 @@ async def lifespan(app: FastAPI):
     
     # Run initial model training on startup (after 120 seconds, needs historical data)
     scheduler.add_job(run_model_training_job, 'date', run_date=datetime.now() + timedelta(seconds=120))
-    
-    # Schedule rate scraper to run every 1 hour
-    scheduler.add_job(lambda: run_scrape_job(), 'interval', hours=1, id='scraper_hourly')
     
     # Schedule news scraper to run every 1 hour
     scheduler.add_job(lambda: run_news_scrape_job(), 'interval', hours=1, id='news_scraper_hourly')
@@ -298,13 +304,6 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down scheduler...")
     scheduler.shutdown()
-
-def run_scrape_job():
-    db = SessionLocal()
-    try:
-        scrape_and_store_rates(db)
-    finally:
-        db.close()
 
 def run_news_scrape_job():
     """Run multi-source news scraper."""
@@ -366,6 +365,7 @@ def read_root():
 def health_check():
     return {"status": "ok"}
 
+
 @app.get("/api/rates")
 def read_rates(
     db: Session = Depends(get_db),
@@ -379,91 +379,113 @@ def read_rates(
     # 1. Get Latest Rates
     # Fetch recent rates (last 500) and deduplicate by region/purity to get the absolute latest for each
     recent_rates = db.query(GoldRate).order_by(GoldRate.created_at.desc()).limit(500).all()
-    
+
     latest_rates_map = {}
     for rate in recent_rates:
-        key = (rate.region, rate.purity)
+        key = (rate.region, canonical_purity(rate.purity))
         if key not in latest_rates_map:
             latest_rates_map[key] = rate
-            
+
     latest_rates = list(latest_rates_map.values())
-    
+
     if not latest_rates:
         return []
-        
+
     # Use the timestamp of the most recent rate as the reference point
     latest_time = latest_rates[0].created_at
 
     # 2. Get Reference Rates (Yesterday's Closing / Last available before today)
     cutoff_time = latest_time - timedelta(hours=20)
-    
-    # DEBUG LOGGING
-    logger.info(f"CALC DEBUG: Latest Time: {latest_time}, Cutoff: {cutoff_time}")
-    
+
     # Fetch rates from 48 hours ago to cutoff_time
     history_start = latest_time - timedelta(hours=48)
-    
+
     # Get all rates from history window
     history_rates = db.query(GoldRate).filter(
         GoldRate.created_at >= history_start,
         GoldRate.created_at <= cutoff_time
     ).order_by(GoldRate.created_at.desc()).all()
-    
-    logger.info(f"CALC DEBUG: Found {len(history_rates)} history rates between {history_start} and {cutoff_time}")
-    
+
+    logger.info(
+        f"RATES: {len(latest_rates)} latest, {len(history_rates)} history rows in "
+        f"[{history_start}, {cutoff_time}]"
+    )
+
+    # Key on the canonical purity so "22 Carat" (current table) joins against
+    # "22K" (history table headers). See canonical_purity().
     reference_rates_map = {}
-    
-    # Populate reference map with the *most recent* rate found in that past window for each key
     for rate in history_rates:
-        key = f"{rate.region}-{rate.purity}"
+        key = f"{rate.region}-{canonical_purity(rate.purity)}"
         if key not in reference_rates_map:
             reference_rates_map[key] = rate.price
-            # Trace just one key to avoid spam
-            if rate.region == "India" and rate.purity == "24 Carat":
-                logger.info(f"CALC DEBUG: Found ref for India-24 Carat: {rate.price} at {rate.created_at}")
 
-    # 3. Helper to parse price
-    def parse_price(price_str):
-        if not price_str: return 0.0
-        clean = price_str
-        if "₹" in price_str:
-            clean = price_str.split("₹")[0]
-        clean = clean.replace(",", "").strip()
-        try:
-            return float(clean)
-        except ValueError:
-            return 0.0
+    # 3. Feed staleness (T1.3 / T7.1). The timestamp we publish is the feed fetch
+    # time, not the render time, and once the feed is stale we stop publishing
+    # movement figures rather than presenting an old delta as today's.
+    # FEED_STALE_AFTER already encodes 2x the refresh cadence.
+    feed_is_stale = is_feed_stale(latest_time)
+    if feed_is_stale:
+        logger.error(
+            f"RATE GUARDRAIL: feed is {feed_age(latest_time)} old "
+            f"(> {FEED_STALE_AFTER}); suppressing change indicators"
+        )
 
     # 4. Build Response
     response = []
+    missing_reference = []
+    ratio_input: Dict[str, Dict[str, float]] = defaultdict(dict)
+
     for rate in latest_rates:
-        key = f"{rate.region}-{rate.purity}"
+        purity_key = canonical_purity(rate.purity)
+        key = f"{rate.region}-{purity_key}"
         current_price = parse_price(rate.price)
-        
-        change = 0.0
-        change_percent = 0.0
-        
-        if key in reference_rates_map:
-            prev_price = parse_price(reference_rates_map[key])
-            if key == "India-24 Carat":
-                 logger.info(f"CALC DEBUG: India-24 Calc: Curr={current_price}, Prev={prev_price}")
-            
-            if prev_price > 0:
-                change = current_price - prev_price
-                change_percent = (change / prev_price) * 100
-        else:
-            if key == "India-24 Carat":
-                logger.info("CALC DEBUG: India-24 Carat NOT found in reference map")
-        
+
+        # T7.1: never publish a zero, negative or unparseable price. Dropping the
+        # row makes the frontend render an empty state instead of a fake figure.
+        if current_price is None:
+            logger.error(
+                f"RATE GUARDRAIL: dropping {key} — unparseable or non-positive "
+                f"price {rate.price!r}"
+            )
+            continue
+
+        ratio_input[rate.region][purity_key] = current_price
+
+        # T1.2: change stays None unless a real prior value exists. A permanent
+        # 0.00% is a lie the user can spot; null lets the UI render nothing.
+        change = None
+        change_percent = None
+        prev_price = parse_price(reference_rates_map.get(key))
+
+        if prev_price is not None and not feed_is_stale:
+            change = round(current_price - prev_price, 2)
+            change_percent = round((current_price - prev_price) / prev_price * 100, 2)
+        elif prev_price is None:
+            missing_reference.append(key)
+
         response.append({
             "region": rate.region,
             "purity": rate.purity,
+            "purity_key": purity_key,
             "price": rate.price,
             "currency": rate.currency,
-            "change": round(change, 2),
-            "change_percent": round(change_percent, 2),
-            "updated_at": rate.created_at.isoformat() if rate.created_at else None
+            # null, not 0.0, when there is no prior close to compare against.
+            "change": change,
+            "change_percent": change_percent,
+            # Feed fetch time, which is what T1.3 requires the page to display.
+            "updated_at": rate.created_at.isoformat() if rate.created_at else None,
+            "feed_stale": feed_is_stale,
         })
+
+    if missing_reference:
+        logger.warning(
+            f"RATES: no prior close for {len(missing_reference)} key(s); change "
+            f"suppressed: {sorted(missing_reference)}"
+        )
+
+    # T7.1: log 22K/24K ratio anomalies. Does not block the response — an out-of-band
+    # ratio is a data-quality signal for the operator, not a reason to show nothing.
+    check_purity_ratio(ratio_input)
 
     ai_cache.set("rates", response, ttl_seconds=300)
     return response
