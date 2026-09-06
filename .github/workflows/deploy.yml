@@ -313,7 +313,14 @@ jobs:
             # Validate both files in a throwaway container before the running
             # stack sees them. The ERR trap restores on any failure here.
             docker compose -f "$COMPOSE" config -q
-            docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine \
+            # Placeholder values for the {$VAR} placeholders the Caddyfile uses.
+            # The running container gets the real ones from compose; validation
+            # only needs them non-empty, since `email {$ACME_EMAIL}` with an
+            # unset variable collapses to a bare `email` and fails to parse.
+            docker run --rm \
+              -e ACME_EMAIL=validate@example.com \
+              -e DOMAIN_NAME=example.com \
+              -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine \
               caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
 
             echo "Both files validate. Applying."
