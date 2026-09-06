@@ -39,7 +39,11 @@ on:
   workflow_dispatch:
     inputs:
       deploy_frontend:
-        description: "Also rebuild and deploy the frontend image (blocked unless the route guard passes)"
+        description: "Rebuild the frontend and publish it as :latest (blocked unless the route guard passes)"
+        type: boolean
+        default: false
+      build_frontend_candidate:
+        description: "Build the frontend and push it as :candidate-<sha> only. Safe: nothing deploys it."
         type: boolean
         default: false
 
@@ -143,13 +147,20 @@ jobs:
           cache-from: type=gha,scope=backend
           cache-to: type=gha,scope=backend,mode=max
 
+  # The image always includes frontend/public, so the 15 static rate pages are
+  # baked in by construction -- Next.js serves public/ at the site root.
+  #
+  # Tagging is what keeps this safe. :latest is the tag production pulls, and it
+  # may be the only surviving copy of the working 34-route UI, since that source
+  # was never committed (docs/BLOCKED.md). So :latest is written ONLY when the
+  # route guard passes. Otherwise the build is published as :candidate-<sha>,
+  # which nothing deploys and which cannot overwrite anything.
   build-frontend:
     name: Build & push frontend
     needs: guardrails
     if: >-
-      needs.guardrails.outputs.frontend_safe == 'true' &&
       github.event_name == 'workflow_dispatch' &&
-      inputs.deploy_frontend
+      (inputs.deploy_frontend || inputs.build_frontend_candidate)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -160,6 +171,33 @@ jobs:
           if [ -z "${{ vars.NEXT_PUBLIC_API_URL }}" ]; then
             echo "::error::NEXT_PUBLIC_API_URL is not set; the build would bake in a localhost fallback."
             exit 1
+          fi
+
+      - name: Choose tags
+        id: tags
+        env:
+          SAFE: ${{ needs.guardrails.outputs.frontend_safe }}
+          WANT_LATEST: ${{ inputs.deploy_frontend }}
+          IMG: ${{ env.REGISTRY_NAMESPACE }}/${{ env.FRONTEND_IMAGE }}
+        run: |
+          if [ "$SAFE" = "true" ] && [ "$WANT_LATEST" = "true" ]; then
+            printf 'tags=%s:latest\n%s:%s\n' "$IMG" "$IMG" "${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            echo "Route guard passed: publishing :latest and :${{ github.sha }}"
+          else
+            printf 'tags=%s:candidate-%s\n' "$IMG" "${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Frontend published as a candidate only"
+              echo ""
+              echo "Pushed \`$IMG:candidate-${{ github.sha }}\`."
+              echo ""
+              echo "\`:latest\` was NOT overwritten, because the route guard"
+              echo "reports this source does not build every live route."
+              echo "Pull the candidate and compare it against production before"
+              echo "promoting it. See docs/BLOCKED.md."
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [ "$WANT_LATEST" = "true" ]; then
+              echo "::warning::deploy_frontend was requested but the route guard failed; published as a candidate instead of :latest."
+            fi
           fi
 
       - name: Log in to Docker Hub
@@ -176,11 +214,15 @@ jobs:
           push: true
           build-args: |
             NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}
-          tags: |
-            ${{ env.REGISTRY_NAMESPACE }}/${{ env.FRONTEND_IMAGE }}:latest
-            ${{ env.REGISTRY_NAMESPACE }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,scope=frontend,mode=max
+
+      # Records what the image can actually serve, so the candidate can be
+      # judged on evidence rather than on the guard's summary alone.
+      - name: Report routes the image produces
+        run: |
+          python scripts/check_frontend_routes.py --summary || true
 
   deploy:
     name: Deploy to droplet
