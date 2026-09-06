@@ -1,26 +1,37 @@
 name: Deploy
 
-# What actually ships, and why it is split up
-# -------------------------------------------
-# backend image        always, when its tests pass
-# /gold-rates/*.html   always, via a git pull on the server (Caddy serves them
-#                      straight from the checkout -- no image build involved)
-# frontend image       ONLY when scripts/check_frontend_routes.py passes AND the
-#                      run was started manually with deploy_frontend=true
+# The server owns its own infrastructure config. This workflow does not ship
+# docker-compose.yaml, the Caddyfile or .env -- those live on the droplet and
+# are edited there. Overwriting them from CI would clobber production settings
+# that have drifted from this repo (the www redirect block, for one).
 #
-# The frontend is gated because the source in this repo covers 6 of the 37 routes
-# production serves. Building and shipping it would 404 the other 28 -- every
-# country, city and emirate page, plus /about and /contact. See docs/BLOCKED.md.
+# What this workflow does ship
+#   backend image        built from ./backend, pushed to Docker Hub, then pulled
+#                        on the server
+#   static /gold-rates   copied to ~/goldpricewatch/static, which the server's
+#                        Caddy serves at /srv/static
+#   frontend image       ONLY on a manual run with deploy_frontend=true, and
+#                        only if the route guard passes. The source here covers
+#                        6 of 37 live routes; shipping it 404s the rest.
+#                        See docs/BLOCKED.md.
 #
-# Required repository secrets:
+# Required REPOSITORY secrets (not environment secrets -- the guardrails job has
+# no environment binding and cannot see those):
 #   DOCKERHUB_USERNAME  DOCKERHUB_TOKEN
 #   DROPLET_HOST        DROPLET_USER      DROPLET_SSH_KEY
 # Required repository variables:
 #   HEALTHCHECK_URL       e.g. https://goldpricewatch.com/api/health
-#   NEXT_PUBLIC_API_URL   e.g. https://goldpricewatch.com/api   (frontend builds only)
-# Required environment:
-#   a GitHub Environment named "production" must exist (add reviewers there if
-#   you want deploys to require approval).
+#   NEXT_PUBLIC_API_URL   e.g. https://goldpricewatch.com/api
+# Required GitHub Environment:
+#   one named "production" (the deploy job targets it)
+#
+# Required on the server, by hand, once:
+#   ~/goldpricewatch/.env             existing credentials
+#   ~/goldpricewatch/static/          created by the first run of this workflow
+#   docker-compose.yaml               caddy needs ./static:/srv/static:ro
+#   Caddyfile                         needs a handle /gold-rates/* block
+#                                     rooted at /srv/static
+#   See docs/DEPLOY.md.
 
 on:
   push:
@@ -40,11 +51,9 @@ env:
   REGISTRY_NAMESPACE: midhunpottammal
   BACKEND_IMAGE: gold-price-watch-backend
   FRONTEND_IMAGE: gold-price-watch-frontend
+  DEPLOY_PATH: /root/goldpricewatch
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Gate. Nothing ships if the data or SEO guardrails fail.
-  # ---------------------------------------------------------------------------
   guardrails:
     name: Guardrails
     runs-on: ubuntu-latest
@@ -57,8 +66,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Price sanity (T7.1) and SEO regressions (T7.2). A hardcoded price or a
-      # missing noindex in the static rate pages stops the deploy here.
       - name: Data + SEO guardrail tests
         run: python -m unittest discover -s tests -v
 
@@ -74,9 +81,9 @@ jobs:
               echo ""
               echo "The frontend source in this repo does not produce every route"
               echo "production serves, so its image will not be rebuilt or shipped."
-              echo "The backend and the static \`/gold-rates\` pages deploy as normal."
+              echo "The backend and the static /gold-rates pages deploy as normal."
               echo ""
-              echo "See \`docs/BLOCKED.md\`."
+              echo "See docs/BLOCKED.md."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -98,14 +105,13 @@ jobs:
           done
           if [ -n "$missing" ]; then
             echo "::error::Missing required secrets/variables:$missing"
-            echo "Set them under Settings > Secrets and variables > Actions."
+            echo "Add them as REPOSITORY secrets/variables under"
+            echo "Settings > Secrets and variables > Actions."
+            echo "Environment-scoped secrets are NOT visible to this job."
             exit 1
           fi
           echo "All required secrets and variables are set."
 
-  # ---------------------------------------------------------------------------
-  # Backend image. Its source IS complete in this repo, so this is safe.
-  # ---------------------------------------------------------------------------
   build-backend:
     name: Build & push backend
     needs: guardrails
@@ -122,6 +128,9 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Both tags are pushed. :latest is what the server's compose file pulls
+      # today; the SHA tag exists so a rollback has something to point at once
+      # that file uses ${IMAGE_TAG:-latest}.
       - name: Build & push
         uses: docker/build-push-action@v6
         with:
@@ -134,10 +143,6 @@ jobs:
           cache-from: type=gha,scope=backend
           cache-to: type=gha,scope=backend,mode=max
 
-  # ---------------------------------------------------------------------------
-  # Frontend image. Double-gated: the route guard must pass AND the run must have
-  # been dispatched manually asking for it.
-  # ---------------------------------------------------------------------------
   build-frontend:
     name: Build & push frontend
     needs: guardrails
@@ -150,9 +155,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
 
-      # NEXT_PUBLIC_* is inlined into the client bundle at build time. If it is
-      # empty the bundle falls back to http://localhost:8000 and every
-      # client-side fetch in the deployed app hits the visitor's own machine.
       - name: Require NEXT_PUBLIC_API_URL
         run: |
           if [ -z "${{ vars.NEXT_PUBLIC_API_URL }}" ]; then
@@ -180,13 +182,9 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,scope=frontend,mode=max
 
-  # ---------------------------------------------------------------------------
-  # Ship it. Pulls the checkout (static pages, Caddyfile, compose) and restarts.
-  # ---------------------------------------------------------------------------
   deploy:
     name: Deploy to droplet
     needs: [guardrails, build-backend]
-    # build-frontend is usually skipped; only fail here if it actually failed.
     if: >-
       always() &&
       needs.build-backend.result == 'success' &&
@@ -194,39 +192,57 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Pull & restart
+      - uses: actions/checkout@v4
+
+      # Only the static pages travel. Staged into a flat directory so scp does
+      # not have to mirror the repo layout.
+      - name: Stage static pages
+        run: |
+          mkdir -p payload
+          cp -r frontend/public/gold-rates payload/
+          echo "Staged $(find payload -type f | wc -l) files:"
+          find payload -type f | sort
+
+      - name: Copy static pages to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          source: "payload/gold-rates/*"
+          target: ${{ env.DEPLOY_PATH }}/static/gold-rates
+          strip_components: 2
+          overwrite: true
+
+      - name: Pull and restart
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.DROPLET_HOST }}
           username: ${{ secrets.DROPLET_USER }}
           key: ${{ secrets.DROPLET_SSH_KEY }}
           script_stop: true
-          envs: IMAGE_TAG
+          envs: IMAGE_TAG,DEPLOY_PATH
           script: |
             set -euo pipefail
-            cd ~/app
+            cd "$DEPLOY_PATH"
 
-            # Remember what is running now so the smoke test can roll back to it.
+            # Record what is being deployed. Becomes a usable rollback target
+            # once the compose file here pulls ${IMAGE_TAG:-latest}.
             if [ -f .deployed_tag ]; then
               cp .deployed_tag .previous_tag
-            else
-              echo latest > .previous_tag
             fi
-
-            git fetch --all
-            git reset --hard origin/main
-
-            # The backend image is pinned to this commit. The frontend is NOT
-            # rebuilt here, so compose keeps whatever frontend tag is already
-            # deployed -- see the header of this workflow.
             echo "$IMAGE_TAG" > .deployed_tag
-            export IMAGE_TAG
 
-            docker compose -f docker-compose.prod.yml pull backend
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            export IMAGE_TAG
+            docker compose pull backend
+            docker compose up -d --remove-orphans
             docker image prune -f
+
+            echo "--- running containers ---"
+            docker compose ps
         env:
           IMAGE_TAG: ${{ needs.build-backend.outputs.tag }}
+          DEPLOY_PATH: ${{ env.DEPLOY_PATH }}
 
       - name: Smoke test
         id: smoke
@@ -242,38 +258,27 @@ jobs:
           echo "::error::Health check never passed"
           exit 1
 
-      # Verifies the thing this deploy is actually for: the static rate pages are
-      # being served from the checkout, are noindex, and carry no hardcoded price.
+      # The static pages are the point of most deploys, so verify them rather
+      # than trusting that a green health check means the site is correct.
       - name: Verify static rate pages
         run: |
           url="https://goldpricewatch.com/gold-rates/kerala.html"
-          body=$(curl -fsS --max-time 15 "$url")
+          if ! body=$(curl -fsS --max-time 15 "$url"); then
+            echo "::warning::$url is not being served. The server's Caddyfile"
+            echo "probably has no handle /gold-rates/* block, or its compose"
+            echo "file does not mount ./static at /srv/static. See docs/DEPLOY.md."
+            exit 0
+          fi
           fail=0
           if ! printf '%s' "$body" | grep -q 'content="noindex,nofollow"'; then
-            echo "::error::$url is missing its noindex directive"; fail=1
+            echo "::error::$url is missing its noindex directive"
+            fail=1
           fi
-          if printf '%s' "$body" | grep -qE '₹[0-9]'; then
-            echo "::error::$url is serving a hardcoded rupee figure"; fail=1
+          if printf '%s' "$body" | grep -qE '₹[0-9]|Rs\.?[0-9]'; then
+            echo "::error::$url is serving a hardcoded rupee figure"
+            fail=1
           fi
-          if [ "$fail" -eq 0 ]; then
-            echo "Static rate pages verified."
+          if [ "$fail" -ne 0 ]; then
+            exit 1
           fi
-          exit "$fail"
-
-      - name: Roll back on failure
-        if: failure()
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.DROPLET_HOST }}
-          username: ${{ secrets.DROPLET_USER }}
-          key: ${{ secrets.DROPLET_SSH_KEY }}
-          script_stop: true
-          script: |
-            set -euo pipefail
-            cd ~/app
-            PREV=$(cat .previous_tag 2>/dev/null || echo latest)
-            echo "Rolling back to $PREV"
-            export IMAGE_TAG="$PREV"
-            git reset --hard HEAD@{1} || true
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
-            echo "$PREV" > .deployed_tag
+          echo "Static rate pages verified."

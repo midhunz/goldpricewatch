@@ -23,13 +23,13 @@ http://www.{$DOMAIN_NAME}, https://www.{$DOMAIN_NAME} {
         reverse_proxy backend:8000
     }
 
-    # Static state rate pages, served straight from the repo checkout on the
-    # server (mounted read-only in docker-compose.prod.yml).
+    # Static state rate pages. The deploy workflow copies them to ./static on
+    # the server, mounted read-only at /srv/static in docker-compose.prod.yml.
     #
     # These deliberately do NOT come from the frontend image. The frontend source
     # in this repo covers only 6 of the 37 live routes, so rebuilding that image
-    # would 404 28 pages (see docs/BLOCKED.md). Serving these files from the
-    # checkout lets fixes to them ship on a `git pull` alone, with no image build.
+    # would 404 28 pages (see docs/BLOCKED.md). Shipping them as plain files
+    # lets fixes go out with no image build at all.
     #
     # `handle` blocks match in order, so this wins over the catch-all below and
     # the stale copies still baked into the frontend image are never reached.

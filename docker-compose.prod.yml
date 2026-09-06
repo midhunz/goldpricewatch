@@ -1,57 +1,100 @@
-version: '3.8'
+# REFERENCE ONLY -- CI does not deploy this file.
+#
+# The authoritative stack definition is ~/goldpricewatch/docker-compose.yaml on
+# the droplet, edited there by hand. This file is the target that one should
+# converge to; keep the two reconciled deliberately rather than by overwriting.
+# See docs/DEPLOY.md for which changes to apply on the server and why.
+#
+# Production stack. Pulls pre-built images from Docker Hub and runs them.
+# Nothing is built on the server.
+#
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d --remove-orphans
+#
+# The project name is pinned below. Compose otherwise derives it from the
+# directory name, and a rename would point the stack at fresh, empty volumes --
+# i.e. an apparently wiped database. Do not change it.
+name: goldpricewatch
 
 services:
   frontend:
     image: midhunpottammal/gold-price-watch-frontend:${IMAGE_TAG:-latest}
-    ports:
-      - "3000:3000"
+    # No published port: Caddy reaches it over the compose network as
+    # frontend:3000. Publishing it would expose an untrusted plaintext port.
+    expose:
+      - "3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://goldpricewatch.com:8000
+      # Only reaches server-side rendering. NEXT_PUBLIC_* is inlined into the
+      # client bundle at build time -- setting it here cannot change it. The
+      # build arg in frontend/Dockerfile is what governs the browser bundle.
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-https://goldpricewatch.com/api}
     depends_on:
       - backend
-    restart: always
+    restart: unless-stopped
 
   backend:
     image: midhunpottammal/gold-price-watch-backend:${IMAGE_TAG:-latest}
+    # KNOWN EXPOSURE, deliberate and temporary.
+    #
+    # build_and_push.sh baked NEXT_PUBLIC_API_URL=http://goldpricewatch.com:8000
+    # into the deployed frontend bundle, so the browser calls this port directly
+    # and closing it breaks every client-side fetch. It cannot be closed until
+    # the frontend is rebuilt against https://goldpricewatch.com/api, which the
+    # route guard blocks today (docs/BLOCKED.md).
+    #
+    # Once that lands: delete this ports block, leaving only `expose`.
     ports:
       - "8000:8000"
+    expose:
+      - "8000"
     environment:
-      - DATABASE_URL=postgresql://user:password@db:5432/goldrate
+      # Required. Compose errors out rather than falling back to a default,
+      # so a missing value fails the deploy instead of silently starting a
+      # backend pointed at the wrong database.
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required in .env}
     depends_on:
-      - db
-    restart: always
+      db:
+        condition: service_healthy
+    restart: unless-stopped
 
   db:
     image: postgres:15-alpine
-    restart: always
+    # Not published. Reachable only from other services on this network.
+    expose:
+      - "5432"
     environment:
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=goldrate
-    ports:
-      - "5432:5432"
+      - POSTGRES_USER=${POSTGRES_USER:?POSTGRES_USER is required in .env}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in .env}
+      - POSTGRES_DB=${POSTGRES_DB:-goldrate}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
 
   caddy:
     image: caddy:2-alpine
-    restart: always
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
-      # Serves /gold-rates/* directly from the checkout, so those pages ship on a
-      # git pull without rebuilding the frontend image. See the Caddyfile.
-      - ./frontend/public:/srv/static:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Static /gold-rates/* pages, rsynced here by the deploy workflow. They
+      # are deliberately not in the frontend image -- see docs/BLOCKED.md.
+      - ./static:/srv/static:ro
       - caddy_data:/data
       - caddy_config:/config
     environment:
       - DOMAIN_NAME=${DOMAIN_NAME:-goldpricewatch.com}
-      - ACME_EMAIL=${ACME_EMAIL:-admin@example.com}
+      - ACME_EMAIL=${ACME_EMAIL:?ACME_EMAIL is required in .env}
     depends_on:
       - frontend
       - backend
+    restart: unless-stopped
 
 volumes:
   postgres_data:

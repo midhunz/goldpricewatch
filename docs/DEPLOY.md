@@ -19,16 +19,24 @@ So the pipeline deliberately does **not** deploy the frontend image. It is gated
 | Thing | Ships? | How |
 |---|---|---|
 | Backend image | Yes | Built from `./backend`, pushed to Docker Hub, pinned to the commit SHA |
-| `/gold-rates/*.html` | Yes | `git pull` on the server — Caddy serves them from the checkout |
-| `Caddyfile`, `docker-compose.prod.yml` | Yes | Same `git pull` |
+| `/gold-rates/*.html` | Yes | Copied over SSH to `~/goldpricewatch/static/gold-rates` |
+| `Caddyfile`, `docker-compose.yaml` | **No** | The server owns these — see below |
 | **Frontend image** | **No** | Blocked by the route guard |
+
+### Why CI does not ship the infrastructure config
+
+The droplet's `docker-compose.yaml`, `Caddyfile` and `.env` are edited on the server and
+are authoritative. Production has drifted from this repo — the deployed Caddyfile carries a
+`www` redirect block that the repo's copy does not — so a CI overwrite would silently
+delete live configuration. `docker-compose.prod.yml` in this repo is a **reference target**
+for reconciling that drift by hand, not a deployed artifact.
 
 ### Why the static pages don't need an image build
 
-`Caddyfile` serves `/gold-rates/*` from `/srv/static`, which
-`docker-compose.prod.yml` bind-mounts read-only from `./frontend/public`. Caddy `handle`
-blocks match in order, so this wins over the catch-all proxy to the frontend, and the stale
-copies still baked into the frontend image are never reached.
+The server's `Caddyfile` serves `/gold-rates/*` from `/srv/static`, which its compose file
+bind-mounts read-only from `./static` — the directory this workflow copies into. Caddy
+`handle` blocks match in order, so this wins over the catch-all proxy to the frontend, and
+the stale copies still baked into the frontend image are never reached.
 
 This is what lets the T1.1 hotfix ship today without touching the frontend.
 
@@ -65,18 +73,38 @@ deploys to pause for approval.
 
 ### 4. Server preparation
 
-The `deploy` job assumes `~/app` on the droplet is a git checkout of this repo whose
-`origin` is reachable by the deploy user:
+No git checkout is needed. The `deploy` job works against `/root/goldpricewatch`, which
+already holds `docker-compose.yaml`, `Caddyfile` and `.env`. Three edits are required
+there before the first run, none of which CI can make for you.
 
-```bash
-ssh <user>@<host>
-cd ~ && git clone <repo-url> app && cd app
-git remote -v          # must resolve without an interactive prompt
-docker compose version # must exist
+**a. Serve the static pages.** Add the mount to the `caddy` service in
+`docker-compose.yaml`:
+
+```yaml
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./static:/srv/static:ro     # add this
+      - caddy_data:/data
+      - caddy_config:/config
 ```
 
-If the repo is private, give the server a deploy key or a credential helper — the workflow
-runs `git fetch` as that user and will fail on a password prompt.
+and the matching block to `Caddyfile`, **above** the catch-all `handle /*`, because
+`handle` blocks match in order:
+
+```
+    handle /gold-rates/* {
+        root * /srv/static
+        file_server
+    }
+```
+
+**b. Close the two ports that do not need to be public.** In `docker-compose.yaml`, delete
+the `ports:` block from the `db` and `frontend` services. Postgres on a public 5432 is
+reachable by anyone with the credentials; Caddy already reaches both over the compose
+network. Leave backend `8000` published for now — the deployed frontend bundle calls it
+directly, and it cannot close until that bundle is rebuilt against `/api`.
+
+**c. Verify.** `docker compose config` must parse, then `docker compose up -d`.
 
 ---
 
