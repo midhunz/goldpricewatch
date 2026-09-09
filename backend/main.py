@@ -642,8 +642,13 @@ def _load_snapshot(db: Session, region: str) -> rate_pages.RateSnapshot:
     )
 
 
-def _load_trend(db: Session, region: str, days: int, purity: str = "22K"):
-    """(timestamp, price) points for the trend chart, guardrail-filtered."""
+def _load_history(db: Session, region: str, days: int):
+    """{purity: [(timestamp, price)]} for the trend chart and history tables.
+
+    One query for every karat rather than one per karat: the tables show 22K and
+    24K side by side, and the rows are already in memory. Prices go through
+    parse_price, so an unusable row is dropped rather than plotted as zero.
+    """
     rows = (
         db.query(GoldRate)
         .filter(
@@ -653,15 +658,16 @@ def _load_trend(db: Session, region: str, days: int, purity: str = "22K"):
         .order_by(GoldRate.created_at.asc())
         .all()
     )
-    points = []
+    history: Dict[str, list] = defaultdict(list)
     for row in rows:
-        if canonical_purity(row.purity) != purity:
+        purity = canonical_purity(row.purity)
+        if not purity:
             continue
         price = parse_price(row.price)
         if price is None:
             continue
-        points.append((row.created_at, price))
-    return points
+        history[purity].append((row.created_at, price))
+    return dict(history)
 
 
 def _render_rate_page(spec: rate_pages.PageSpec, db: Session) -> Response:
@@ -671,8 +677,8 @@ def _render_rate_page(spec: rate_pages.PageSpec, db: Session) -> Response:
         return Response(content=cached, media_type="text/html; charset=utf-8")
 
     snapshot = _load_snapshot(db, spec.region)
-    trend = _load_trend(db, spec.region, rate_pages.TREND_DAYS)
-    page = rate_pages.render_page(spec, snapshot, trend)
+    history = _load_history(db, spec.region, rate_pages.TREND_DAYS)
+    page = rate_pages.render_page(spec, snapshot, history)
 
     # Five minutes, matching /api/rates. Long enough to absorb a crawl burst,
     # short enough that the "Updated" stamp and the date in the title stay

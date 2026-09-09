@@ -1087,6 +1087,179 @@ def _structured_data(
 
 
 # ---------------------------------------------------------------------------
+# Historical price tables
+# ---------------------------------------------------------------------------
+#
+# The chart shows the shape; these show the numbers. Both are wanted, and the
+# table is the part that ranks: "gold rate last 10 days", "gold rate in kerala
+# last 30 days" and their variants are a real slice of this query space, and
+# competitors answer them with exactly this - a dated table a crawler can read.
+#
+# Two spans, because they answer different questions. A week is what someone
+# deciding whether to buy today looks at. A month is what someone deciding
+# whether this is a good time to buy looks at, and it is summarised by week
+# rather than listed day by day so it stays scannable next to the daily table.
+
+WEEK_DAYS = 7
+MONTH_DAYS = 30
+
+
+def daily_closes(
+    points: Sequence[Tuple[datetime, float]]
+) -> List[Tuple[datetime, float]]:
+    """Collapse an hourly series to one reading per day - the day's last.
+
+    The feed writes hourly, so a month is ~720 rows. The last reading of each
+    day is the day's closing rate, which is what a dated table should show;
+    averaging the day's readings would publish a number that was never quoted.
+    """
+    by_day: Dict[str, Tuple[datetime, float]] = {}
+    for moment, price in points:
+        key = moment.strftime("%Y-%m-%d")
+        if key not in by_day or moment >= by_day[key][0]:
+            by_day[key] = (moment, price)
+    return [by_day[key] for key in sorted(by_day)]
+
+
+def _delta_cell(current: float, previous: Optional[float], currency: str) -> str:
+    """A day-over-day change cell, empty where there is nothing to compare to.
+
+    Same rule as the rate cards: no prior reading renders as a dash, never as
+    0.00, because a zero asserts the price held steady (T1.2).
+    """
+    if previous is None:
+        return '<td class="flat">—</td>'
+    change = current - previous
+    if abs(change) < 0.005:
+        return '<td class="flat">no change</td>'
+    pct = (change / previous * 100) if previous else 0.0
+    cls = "up" if change > 0 else "down"
+    sign = "+" if change > 0 else "−"
+    return (
+        f'<td class="{cls}">{sign}{format_money(abs(change), currency)} '
+        f"({abs(pct):.2f}%)</td>"
+    )
+
+
+def week_table(
+    spec: PageSpec,
+    snapshot: RateSnapshot,
+    history: Dict[str, Sequence[Tuple[datetime, float]]],
+) -> str:
+    """Daily closing rates for the last 7 days, per karat, with movement."""
+    purities = [p for p in ("22K", "24K") if history.get(p)]
+    if not purities:
+        return ""
+
+    series = {p: daily_closes(history[p])[-WEEK_DAYS:] for p in purities}
+    days = sorted({moment.strftime("%Y-%m-%d") for p in purities for moment, _ in series[p]})
+    if len(days) < 2:
+        return ""
+
+    lookup = {
+        p: {moment.strftime("%Y-%m-%d"): (moment, price) for moment, price in series[p]}
+        for p in purities
+    }
+
+    head = "".join(f"<th>{html.escape(p)} per gram</th>" for p in purities)
+    lead = purities[0]
+    rows = []
+    for index, day in enumerate(days):
+        cells = ""
+        for purity in purities:
+            entry = lookup[purity].get(day)
+            cells += (
+                f"<td>{format_money(entry[1], snapshot.currency)}</td>"
+                if entry else "<td>—</td>"
+            )
+        current = lookup[lead].get(day)
+        previous = lookup[lead].get(days[index - 1]) if index else None
+        delta = (
+            _delta_cell(current[1], previous[1] if previous else None, snapshot.currency)
+            if current else '<td class="flat">—</td>'
+        )
+        label = datetime.strptime(day, "%Y-%m-%d")
+        rows.append(
+            f"<tr><td>{html.escape(format_date(label))}</td>{cells}{delta}</tr>"
+        )
+
+    return f"""<h3>Last {WEEK_DAYS} days</h3>
+<div class="scroll">
+  <table>
+    <thead><tr><th>Date</th>{head}<th>{html.escape(lead)} change</th></tr></thead>
+    <tbody>{"".join(reversed(rows))}</tbody>
+    <caption>Closing rate for each day in {html.escape(snapshot.currency)} per gram.
+    A day with no reading is shown as a dash rather than filled in.</caption>
+  </table>
+</div>"""
+
+
+def month_table(
+    spec: PageSpec,
+    snapshot: RateSnapshot,
+    history: Dict[str, Sequence[Tuple[datetime, float]]],
+) -> str:
+    """Weekly high, low and close for the last 30 days.
+
+    By week rather than by day: 30 more rows directly under a 7-row daily table
+    is a wall, and the question a month answers is about the trend, not about
+    any one day. High and low are real readings from the feed, not derived.
+    """
+    points = daily_closes(history.get("22K") or [])[-MONTH_DAYS:]
+    if len(points) < WEEK_DAYS + 1:
+        return ""
+
+    # Bucket backwards from the newest day, so the current week is a full week
+    # and any short bucket is the oldest one. Chunking forwards leaves a two-day
+    # stub at the top of the table, next to six full weeks.
+    buckets: List[List[Tuple[datetime, float]]] = []
+    end = len(points)
+    while end > 0:
+        start = max(0, end - WEEK_DAYS)
+        buckets.append(points[start:end])
+        end = start
+
+    rows = []
+    for chunk in buckets:
+        prices = [price for _, price in chunk]
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(format_date(chunk[0][0]))} – "
+            f"{html.escape(format_date(chunk[-1][0]))}</td>"
+            f"<td>{format_money(min(prices), snapshot.currency)}</td>"
+            f"<td>{format_money(max(prices), snapshot.currency)}</td>"
+            f"<td>{format_money(chunk[-1][1], snapshot.currency)}</td>"
+            "</tr>"
+        )
+
+    all_prices = [price for _, price in points]
+    return f"""<h3>Last {MONTH_DAYS} days</h3>
+<div class="scroll">
+  <table>
+    <thead><tr><th>Week</th><th>Low</th><th>High</th><th>Closing rate</th></tr></thead>
+    <tbody>{"".join(rows)}</tbody>
+    <caption>22K gold in {html.escape(snapshot.currency)} per gram. Over the whole
+    period the rate ranged from {format_money(min(all_prices), snapshot.currency)}
+    to {format_money(max(all_prices), snapshot.currency)}.</caption>
+  </table>
+</div>"""
+
+
+def history_tables(
+    spec: PageSpec,
+    snapshot: RateSnapshot,
+    history: Dict[str, Sequence[Tuple[datetime, float]]],
+) -> str:
+    week = week_table(spec, snapshot, history)
+    month = month_table(spec, snapshot, history)
+    if not week and not month:
+        return ""
+    return (
+        f"<h2>Gold rate history in {html.escape(spec.place)}</h2>"
+        f"{week}{month}"
+    )
+
+# ---------------------------------------------------------------------------
 # Whole page
 # ---------------------------------------------------------------------------
 
@@ -1096,7 +1269,7 @@ TREND_DAYS = 30
 def render_page(
     spec: PageSpec,
     snapshot: RateSnapshot,
-    history: Optional[Sequence[Tuple[datetime, float]]] = None,
+    history: Optional[Dict[str, Sequence[Tuple[datetime, float]]]] = None,
     now: Optional[datetime] = None,
 ) -> RenderedPage:
     """Render one rate page.
@@ -1133,7 +1306,8 @@ def render_page(
 </div>"""
         units_block = ""
 
-    series = downsample(list(history or []))
+    history = history or {}
+    series = downsample(list(history.get("22K") or []))
     if series and snapshot.usable:
         summary = trend_summary(series, snapshot.currency, spec.place, TREND_DAYS)
         trend_block = (
@@ -1143,6 +1317,11 @@ def render_page(
         )
     else:
         trend_block = ""
+
+    # The chart shows the shape, the tables show the numbers. Only published
+    # when there is a live rate to head them, so a page in its empty state does
+    # not present a history it is not also willing to price today.
+    tables_block = history_tables(spec, snapshot, history) if snapshot.usable else ""
 
     city_block = ""
     if spec.cities and snapshot.usable:
@@ -1175,6 +1354,7 @@ differ, not because their gold costs a different amount.</p>"""
   {rates_block}
   {units_block}
   {trend_block}
+  {tables_block}
   {city_block}
   {context}
   {_city_switcher(spec)}

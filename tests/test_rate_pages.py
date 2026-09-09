@@ -52,10 +52,14 @@ EMPTY = rate_pages.RateSnapshot(
     region="Oman", currency="OMR", by_purity={}, changes={}, updated_at=None, stale=False
 )
 
-HISTORY = [
-    (datetime(2026, 8, 10) + timedelta(days=i), 52.0 + math.sin(i / 3.0) * 1.2)
-    for i in range(30)
-]
+def _series(base, days=30, start=datetime(2026, 8, 10)):
+    """A daily series with a little shape to it, as the feed would produce."""
+    return [(start + timedelta(days=i), base + math.sin(i / 3.0) * 1.2)
+            for i in range(days)]
+
+
+HISTORY = {"22K": _series(52.0), "24K": _series(55.5)}
+TREND = HISTORY["22K"]
 
 SPECS = list(rate_pages.PAGES.values())
 
@@ -411,7 +415,7 @@ class TestTrend(unittest.TestCase):
         self.assertIn("Over the last 30 days", markup)
 
     def test_chart_is_omitted_rather_than_drawn_empty(self):
-        for history in ([], HISTORY[:1]):
+        for history in ({}, {"22K": TREND[:1]}):
             with self.subTest(points=len(history)):
                 markup = render(SPECS[0], LIVE, history).html
                 self.assertNotIn("<polyline", markup)
@@ -425,9 +429,9 @@ class TestTrend(unittest.TestCase):
         main.read_rates_history, which now drops those rows; this is the evidence
         for why the fix is not cosmetic.
         """
-        clean = rate_pages.trend_svg(HISTORY, "OMR")
+        clean = rate_pages.trend_svg(TREND, "OMR")
         poisoned = rate_pages.trend_svg(
-            list(HISTORY[:15]) + [(HISTORY[15][0], 0.0)] + list(HISTORY[16:]), "OMR"
+            list(TREND[:15]) + [(TREND[15][0], 0.0)] + list(TREND[16:]), "OMR"
         )
 
         def y_span(svg):
@@ -450,7 +454,7 @@ class TestTrend(unittest.TestCase):
         self.assertLess(max(real_variation) - min(real_variation), 10)
 
     def test_downsample_keeps_the_latest_point(self):
-        dense = HISTORY * 40
+        dense = TREND * 40
         thinned = rate_pages.downsample(dense, target=50)
         self.assertLessEqual(len(thinned), 51)
         self.assertEqual(thinned[-1], dense[-1])
@@ -459,6 +463,114 @@ class TestTrend(unittest.TestCase):
         flat = [(datetime(2026, 9, 1) + timedelta(days=i), 50.0) for i in range(10)]
         self.assertIn("<polyline", rate_pages.trend_svg(flat, "OMR"))
 
+
+class TestHistoryTables(unittest.TestCase):
+    """The dated history tables: last 7 days daily, last 30 days by week.
+
+    The chart shows the shape; these show the numbers, and they are the part
+    that answers "gold rate last 10 days" style queries in text a crawler reads.
+    """
+
+    def rows(self, markup, heading):
+        section = markup.split(heading, 1)[-1].split("</table>", 1)[0]
+        return re.findall(r"<tr><td>([^<]+)</td>(.*?)</tr>", section, re.S)
+
+    def test_both_tables_render_on_a_live_page(self):
+        markup = render(rate_pages.PAGES["/gold-rates/muscat.html"]).html
+        self.assertIn("Gold rate history in Muscat", markup)
+        self.assertIn("Last 7 days", markup)
+        self.assertIn("Last 30 days", markup)
+
+    def test_week_table_is_seven_days_newest_first(self):
+        markup = render(SPECS[0]).html
+        rows = self.rows(markup, "Last 7 days")
+        self.assertEqual(len(rows), 7, [r[0] for r in rows])
+        dates = [datetime.strptime(r[0], "%d %b %Y") for r in rows]
+        self.assertEqual(dates, sorted(dates, reverse=True))
+        self.assertEqual(dates[0], TREND[-1][0])
+
+    def test_week_table_shows_both_karats(self):
+        markup = render(SPECS[0]).html
+        rows = self.rows(markup, "Last 7 days")
+        latest = rows[0][1]
+        self.assertIn(rate_pages.format_money(TREND[-1][1], "OMR"), latest)
+        self.assertIn(rate_pages.format_money(HISTORY["24K"][-1][1], "OMR"), latest)
+
+    def test_oldest_row_has_no_fabricated_change(self):
+        """Same rule as the rate cards: nothing to compare against renders as a
+        dash, never as 0.00 (T1.2)."""
+        markup = render(SPECS[0]).html
+        rows = self.rows(markup, "Last 7 days")
+        self.assertIn("—", rows[-1][1])
+        self.assertNotIn("0.00%", markup)
+
+    def test_month_table_counts_full_weeks_back_from_today(self):
+        """Chunking forwards leaves a two-day stub at the top of the table."""
+        markup = render(SPECS[0]).html
+        rows = self.rows(markup, "Last 30 days")
+        spans = [r[0] for r in rows]
+        first_start, first_end = spans[0].split(" – ")
+        start = datetime.strptime(first_start, "%d %b %Y")
+        end = datetime.strptime(first_end, "%d %b %Y")
+        self.assertEqual(end, TREND[-1][0])
+        self.assertEqual((end - start).days, 6, spans)
+
+    def test_month_table_high_and_low_are_real_readings(self):
+        markup = render(SPECS[0]).html
+        rows = self.rows(markup, "Last 30 days")
+        prices = {round(p, 2) for _, p in rate_pages.daily_closes(TREND)}
+        for _, cells in rows:
+            for value in re.findall(r"<td>([0-9][0-9.,]*)</td>", cells):
+                with self.subTest(value=value):
+                    self.assertIn(round(float(value.replace(",", "")), 2), prices)
+
+    def test_tables_are_withheld_when_there_is_no_live_rate(self):
+        """A page that will not price today does not publish a price history."""
+        for label, snapshot in (("stale", STALE), ("empty", EMPTY)):
+            with self.subTest(state=label):
+                markup = render(SPECS[0], snapshot).html
+                self.assertNotIn("Gold rate history", markup)
+
+    def test_tables_are_omitted_rather_than_drawn_empty(self):
+        markup = render(SPECS[0], LIVE, {"22K": TREND[:1]}).html
+        self.assertNotIn("Last 7 days", markup)
+
+    def test_daily_closes_keeps_the_last_reading_of_each_day(self):
+        """The feed writes hourly. A day's closing rate is its last reading -
+        averaging would publish a number that was never quoted."""
+        day = datetime(2026, 9, 1)
+        points = [
+            (day.replace(hour=9), 50.0),
+            (day.replace(hour=13), 51.0),
+            (day.replace(hour=17), 52.0),
+            (day.replace(day=2, hour=10), 53.0),
+        ]
+        self.assertEqual(
+            rate_pages.daily_closes(points),
+            [(day.replace(hour=17), 52.0), (day.replace(day=2, hour=10), 53.0)],
+        )
+
+    def test_history_currency_matches_the_market(self):
+        """The renderer takes the currency from the snapshot, so an India page
+        fed India rows must not inherit the Gulf currency or its formatting."""
+        rupees = rate_pages.RateSnapshot(
+            region="India",
+            currency="INR",
+            by_purity={"24K": 15535.0, "22K": 14240.0, "18K": 11651.0},
+            changes={"24K": 35.0, "22K": None, "18K": -12.0},
+            updated_at=NOW,
+            stale=False,
+        )
+        history = {"22K": _series(14240.0), "24K": _series(15535.0)}
+        markup = rate_pages.render_page(
+            rate_pages.PAGES["/gold-rates/kerala.html"], rupees, history, NOW
+        ).html
+        self.assertIn("Gold rate history in Kerala", markup)
+        section = markup.split("Gold rate history", 1)[-1].split("</table>")[1]
+        self.assertIn("INR per gram", section)
+        self.assertNotIn("OMR", section)
+        # Rupees are quoted in whole units with separators, not to two decimals.
+        self.assertIn("14,240", markup)
 
 class TestSitemap(unittest.TestCase):
     """T2.7 and T2.8."""
