@@ -8,14 +8,22 @@
 
 ---
 
-## STATUS — updated 5 September 2026
+## STATUS — updated 9 September 2026
 
-Phase 0 recon is complete. The T1.1 hotfix has shipped. Read these three documents before
-picking up any task below:
+Phase 0 recon is complete. The T1.1 hotfix has shipped.
+
+**9 Sep: Search Console data arrived and re-ordered this list.** The measured finding is that
+the site ranks and is not clicked — 87 non-brand queries at positions 4-10 return a 0.57% CTR
+against a ~3.5% norm, about 750 clicks over eight months. The cause is the snippet, which
+makes **T4.8 (date token in titles) the P0 of this whole document**, not the P2 it is filed
+as below. It has shipped for the Oman cluster; everything else is waiting on the same blocker.
+
+Read these documents before picking up any task below:
 
 | Document | What it holds |
 |---|---|
-| **[docs/BLOCKED.md](docs/BLOCKED.md)** | **Read this first.** Per-task status for every task in this list, and the one blocker that stops 26 of them |
+| **[docs/BLOCKED.md](docs/BLOCKED.md)** | **Read this first.** Per-task status for every task in this list, and the one blocker that stops 23 of them |
+| **[docs/search-console-2026-09.md](docs/search-console-2026-09.md)** | The measured Search Console + GA4 data, what it changed, and the regression it caught us making |
 | [docs/phase0-recon.md](docs/phase0-recon.md) | T0.1, T0.2, T0.4, T0.5, T0.7 results, plus 10 corrections to this audit |
 | [docs/url-inventory.md](docs/url-inventory.md) | T0.3 — full URL inventory, inbound link counts, 6 true orphans |
 | [docs/cwv-baseline.md](docs/cwv-baseline.md) | T0.6 — partial; LCP/INP/CLS need a PSI API key |
@@ -384,7 +392,16 @@ Zero silver anywhere on the site. `mintjewels.ae` runs Silver 999 and Silver 925
 ### T4.7 — No buy/sell shop rates
 `dxbcityofgold.com` splits spot / buy-new / sell-used per karat. High commercial intent, nobody in India does it well. `NEEDS-OWNER-INPUT` on whether you can source retail spreads.
 
-### T4.8 — No date token in titles
+### T4.8 — No date token in titles 🔴 P0 — THE HIGHEST-VALUE FIX ON THIS LIST
+**Re-prioritised 9 Sep 2026 from P2, on measured Search Console data.** This is the ~750-click
+gap: 87 non-brand queries rank 4-10 and convert at 0.57% because the snippet never carries the
+number the searcher asked for. See `docs/search-console-2026-09.md`.
+
+**Shipped** for `/oman-gold-prices` and the seven Oman city pages, via the server-side
+renderer in `backend/rate_pages.py` (titles now read `Gold Rate in Muscat Today - 22K OMR
+53.25/g · 9 Sep`, 51 chars). Every other rate page still needs it and is blocked on the
+missing frontend source.
+
 Competitors put the date in the title: *"Gold Rate Today in Kerala 2nd September 2026"*, *"Todays Gold Rate in Kerala, 22 & 24 Carat (03 September 2026)"*. It's a strong freshness signal for "gold rate today" queries.
 
 **Do this:** template the date into rate-page titles, regenerated daily (ISR / daily revalidate). Keep within the 60-char cap from T3.1.

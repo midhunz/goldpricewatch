@@ -52,8 +52,30 @@ class TestRatePagesExist(unittest.TestCase):
         self.assertTrue(PAGES, f"no HTML files under {RATE_PAGES_DIR}")
 
     def test_expected_page_count(self):
-        """15 files: 11 India states + 4 Oman cities. The audit counted only 11."""
-        self.assertEqual(len(PAGES), 15, [p.name for p in PAGES])
+        """11 files: the India state pages.
+
+        There were 15. The four Oman city pages (muscat, salalah, sohar, nizwa)
+        moved to the server-side renderer in backend/rate_pages.py, which serves
+        them at the same URLs with live OMR prices instead of the noindex empty
+        state these files carry. They are covered by TestRenderedPages below.
+        """
+        self.assertEqual(len(PAGES), 11, [p.name for p in PAGES])
+
+    def test_no_oman_page_is_left_behind_as_a_file(self):
+        """A file here would be shadowed by the renderer and silently diverge."""
+        import sys
+
+        sys.path.insert(0, str(REPO / "backend"))
+        import rate_pages
+
+        rendered = {spec.path for spec in rate_pages.PAGES.values()}
+        for page in PAGES:
+            self.assertNotIn(
+                f"/gold-rates/{page.name}",
+                rendered,
+                f"{page.name} exists both as a static file and as a rendered "
+                f"route; Caddy serves the rendered one, so the file is dead code",
+            )
 
 
 class TestNoFabricatedPrices(unittest.TestCase):

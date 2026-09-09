@@ -30,7 +30,11 @@ name: Deploy
 #   ~/goldpricewatch/static/          created by the first run of this workflow
 #   docker-compose.yaml               caddy needs ./static:/srv/static:ro
 #   Caddyfile                         needs a handle /gold-rates/* block
-#                                     rooted at /srv/static
+#                                     rooted at /srv/static, and an @rendered
+#                                     matcher proxying the Oman rate pages and
+#                                     /sitemap.xml to backend:8000
+#                                     (both are added automatically below if
+#                                     absent, then validated before they apply)
 #   See docs/DEPLOY.md.
 
 on:
@@ -347,6 +351,46 @@ jobs:
               changed=1
             fi
 
+
+            # 3. Route the server-rendered rate pages and the sitemap to the
+            #    backend, ahead of both the file server and the catch-all.
+            #
+            #    Without this the work is deployed but unreachable: Caddy would
+            #    keep handing /oman-gold-prices to Next and /gold-rates/*.html to
+            #    the file server, and the live prices, date-stamped titles and
+            #    real sitemap lastmod would never be served. See the Caddyfile in
+            #    this repo, and backend/rate_pages.py for why they exist.
+            #
+            #    Inserted before the /gold-rates/* handler so it wins for the four
+            #    Oman paths while the India state files keep being served as files.
+            if grep -q '@rendered' Caddyfile; then
+              echo "Caddyfile: an @rendered matcher already exists, leaving alone"
+            else
+              awk '
+                !ins && /handle[[:space:]]+\/gold-rates\/\*[[:space:]]*\{/ {
+                  print "    @rendered path /oman-gold-prices \\"
+                  print "                   /gold-rates/muscat.html \\"
+                  print "                   /gold-rates/salalah.html \\"
+                  print "                   /gold-rates/sohar.html \\"
+                  print "                   /gold-rates/nizwa.html \\"
+                  print "                   /gold-rates/sur.html \\"
+                  print "                   /gold-rates/ibri.html \\"
+                  print "                   /gold-rates/barka.html \\"
+                  print "                   /sitemap.xml"
+                  print "    handle @rendered {"
+                  print "        reverse_proxy backend:8000"
+                  print "    }"
+                  print ""
+                  ins = 1
+                }
+                { print }
+                END { if (!ins) exit 3 }
+              ' Caddyfile > Caddyfile.new
+              echo "Caddyfile: inserted @rendered matcher before the file server"
+              mv Caddyfile.new Caddyfile
+              changed=1
+            fi
+
             if [ "$changed" -eq 0 ]; then
               echo "Server already configured; nothing to change."
               exit 0
@@ -427,8 +471,13 @@ jobs:
           echo "::error::Health check never passed"
           exit 1
 
-      # The static pages are the point of most deploys, so verify them rather
-      # than trusting that a green health check means the site is correct.
+      # The rate pages are the point of most deploys, so verify them rather than
+      # trusting that a green health check means the site is correct.
+      #
+      # Two shapes now. The 11 India state pages are still plain files with no
+      # prices on them; the Oman pages are rendered by the backend and are only
+      # useful if they actually carry a live figure and today's date, which is
+      # the whole reason they moved (backend/rate_pages.py).
       - name: Verify static rate pages
         run: |
           url="https://goldpricewatch.com/gold-rates/kerala.html"
@@ -451,3 +500,72 @@ jobs:
             exit 1
           fi
           echo "Static rate pages verified."
+
+      - name: Verify rendered rate pages
+        run: |
+          set -u
+          today=$(TZ=Asia/Muscat date '+%-d %b')
+          fail=0
+
+          for path in /gold-rates/muscat.html /oman-gold-prices; do
+            url="https://goldpricewatch.com$path"
+            if ! body=$(curl -fsS --max-time 20 "$url"); then
+              echo "::warning::$url is not being served. The server's Caddyfile"
+              echo "probably has no @rendered matcher routing it to the backend."
+              echo "See the Caddyfile in this repo and docs/DEPLOY.md."
+              continue
+            fi
+
+            # A page that could not verify a price renders an empty state and
+            # noindexes itself. That is the feed being stale, not the deploy
+            # being broken, so it warns rather than failing the run.
+            if printf '%s' "$body" | grep -q 'name="robots" content="noindex'; then
+              echo "::warning::$url is serving its empty state - the rate feed"
+              echo "is stale. The page is correct; the feed is not. Check the"
+              echo "Prefect scrape."
+              continue
+            fi
+
+            if ! printf '%s' "$body" | grep -qE 'OMR [0-9]'; then
+              echo "::error::$url claims to be indexable but carries no OMR figure"
+              fail=1
+            fi
+            if ! printf '%s' "$body" | grep -q "<title>.*$today"; then
+              echo "::error::$url title is missing today's date ($today)"
+              printf '%s' "$body" | grep -o '<title>.*</title>' || true
+              fail=1
+            fi
+            if printf '%s' "$body" | grep -qE '₹[0-9]|Rs\.?[0-9]'; then
+              echo "::error::$url is serving a rupee figure for an Omani city"
+              fail=1
+            fi
+            if ! printf '%s' "$body" | grep -q '"@type":"Dataset"'; then
+              echo "::error::$url is missing its Dataset structured data"
+              fail=1
+            fi
+            if ! printf '%s' "$body" | grep -q "rel=\"canonical\" href=\"https://goldpricewatch.com$path\""; then
+              echo "::error::$url has no self-referencing canonical"
+              fail=1
+            fi
+            echo "Verified $url"
+          done
+
+          # The sitemap exists to stop advertising a six-month-old lastmod, so a
+          # lastmod that is not from this year means the Next route handler is
+          # still answering and the Caddy override did not take.
+          sm="https://goldpricewatch.com/sitemap.xml"
+          if body=$(curl -fsS --max-time 20 "$sm"); then
+            if printf '%s' "$body" | grep -qE '<lastmod>2026-0[12]-'; then
+              echo "::error::$sm is still serving build-time lastmod values;"
+              echo "the Caddy @rendered override is not routing it to the backend."
+              fail=1
+            else
+              echo "Verified $sm"
+            fi
+          else
+            echo "::warning::$sm could not be fetched."
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
