@@ -82,14 +82,17 @@ jobs:
       # Stdlib unittest only — no dependencies, so nothing is added to the
       # production image for the sake of tests.
       #
-      # Enforces (see SEO_TASKS.md):
-      #   T1.1  no hardcoded price may ship in a static rate page
+      # Enforces (see SEO_TASKS.md), across all 34 server-rendered rate pages
+      # (backend/rate_pages.py) as well as the pure guardrail helpers:
+      #   T1.1  a page that cannot verify a price publishes none and noindexes
       #   T1.2  a missing prior close yields null, never 0.00
-      #   T1.4  no unsubstantiated freshness claim
-      #   T3.1  title <= 60 chars, brand not doubled
+      #   T2.1  no city page presents the national rate as a distinct local rate
+      #   T3.1  title <= 60 chars, brand not doubled, carries the live rate
       #   T3.2  meta description <= 155 chars
       #   T3.3  og:image absolute and not a 404; full Twitter card set
       #   T3.6  one H1 per page, no skipped heading level
+      #   T4.8  today's date in the title
+      #   T5.1  Dataset markup, and only where a verified figure backs it
       #   T7.1  price sanity: no zero prices, 22K/24K ratio band,
       #         state-vs-national divergence, feed staleness
       #   T7.2  canonical present, absolute, self-referencing

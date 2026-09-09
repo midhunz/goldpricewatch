@@ -62,6 +62,34 @@ are indexable again.
 
 ---
 
+## What shipped
+
+All **34 rate pages** are rendered by the backend and routed to it by Caddy: 7 country pages,
+4 emirates, 5 India cities, 7 Oman cities and the 11 India state pages. Each one carries the
+live 22K rate and today's local date in a title of 60 characters or less, a visible timestamp
+in local time, 24K/22K/21K/18K per gram, per 8 g, per tola and per ounce (per sovereign on the
+India pages), a server-rendered SVG trend chart, `Dataset` and `BreadcrumbList` markup, and
+links to its siblings, the forecast and the calculator.
+
+Where the feed is stale or a price fails the `rate_utils` guardrails, the page publishes no
+figure, says so, and noindexes itself.
+
+All 15 files under `frontend/public/gold-rates/` are gone. Those URLs are rendered now.
+
+### The one thing to watch
+
+The 11 India state pages are indexable again, and they all show the same national rate,
+because that is the only India rate the feed has. They differ in title, place name and a
+sentence of local context; the numbers are identical and honestly labelled as national.
+
+That is a thin-content pattern, and the report's own data argues against it: India averages
+position 59.2 and returned 9 clicks from 12,724 impressions. It is defensible — the rates are
+real, correct and clearly explained, where before they were 10.22% wrong — but if these pages
+have not moved in 90 days, `noindex` on the 11 states is the first lever to pull, and it is
+one line each in the registry.
+
+---
+
 ## Corrections to the audit and to our own docs
 
 1. **The four Oman pages are not orphans.** `docs/url-inventory.md` lists them as true

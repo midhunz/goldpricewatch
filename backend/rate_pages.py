@@ -147,9 +147,9 @@ class RateSnapshot:
 # Page registry
 # ---------------------------------------------------------------------------
 #
-# Oman first, deliberately. It is the one market the site has won - cluster
-# average position 8.3 - and it is where the current state of the site is doing
-# the most damage: /gold-rates/salalah.html (9.24), muscat.html (9.09),
+# Oman leads this list, deliberately. It is the one market the site has won -
+# cluster average position 8.3, against 26.7 for the UAE and 59.2 for India -
+# and it is where the state of the site was doing the most damage: /gold-rates/salalah.html (9.24), muscat.html (9.09),
 # sohar.html (9.08) and nizwa.html (9.02) are among the best-ranking URLs on the
 # domain and all four are being deindexed right now by the T1.1 emergency fix,
 # which was the correct response to their publishing rupee prices for Omani
@@ -168,89 +168,246 @@ class RateSnapshot:
 # So every city page says plainly which rate it is showing, and differentiates
 # on content - geography, souqs, making charges - never on invented numbers.
 
-_OMAN_CITY_BLURBS = {
-    "muscat": (
-        "Muscat is Oman's capital and its largest gold market, with the Mutrah "
-        "souq in the old port district the best-known place to buy."
-    ),
-    "salalah": (
-        "Salalah is the capital of Dhofar in Oman's far south, and the main "
-        "gold-buying centre outside the Muscat area."
-    ),
-    "sohar": (
-        "Sohar is the principal city of Al Batinah North, on the coast between "
-        "Muscat and the UAE border."
-    ),
-    "nizwa": (
-        "Nizwa sits inland in Ad Dakhiliyah and is known for its historic souq, "
-        "long a centre for Omani silver and gold craftsmanship."
-    ),
-    "sur": (
-        "Sur is the coastal capital of Ash Sharqiyah South, east of Muscat."
-    ),
-    "ibri": (
-        "Ibri is the main town of Ad Dhahirah, in Oman's north-west interior."
-    ),
-    "barka": (
-        "Barka lies in Al Batinah South, on the coast a short drive north-west "
-        "of Muscat."
-    ),
-}
+@dataclass(frozen=True)
+class Market:
+    """A country in the feed, and how its pages present it."""
+
+    region: str          # the gold_rates.region key
+    place: str           # display name
+    hub_path: str
+    locale: str
+    tz_offset_hours: float
+    tz_label: str
+    blurb: str
+    units: Tuple[Tuple[str, float], ...] = GULF_UNITS
 
 
-def _oman_city(slug: str, name: str) -> PageSpec:
-    return PageSpec(
-        path=f"/gold-rates/{slug}.html",
-        region="Oman",
-        place=name,
-        kind="city",
-        locale="en_OM",
-        country="Oman",
-        blurb=_OMAN_CITY_BLURBS[slug],
-        units=GULF_UNITS,
-        parent="/oman-gold-prices",
-        keywords=(
-            f"gold rate {name.lower()}, {name.lower()} gold price today, "
-            f"22k gold rate {name.lower()}, 24k gold price {name.lower()}, oman gold rate"
-        ),
-    )
-
-
-OMAN_CITIES: Tuple[Tuple[str, str], ...] = (
-    ("muscat", "Muscat"),
-    ("salalah", "Salalah"),
-    ("sohar", "Sohar"),
-    ("nizwa", "Nizwa"),
-    ("sur", "Sur"),
-    ("ibri", "Ibri"),
-    ("barka", "Barka"),
-)
-
-_PAGE_LIST: List[PageSpec] = [
-    PageSpec(
-        path="/oman-gold-prices",
+MARKETS: Tuple[Market, ...] = (
+    Market(
         region="Oman",
         place="Oman",
-        kind="country",
+        hub_path="/oman-gold-prices",
         locale="en_OM",
-        country="Oman",
+        tz_offset_hours=4.0,
+        tz_label="GST",
         blurb=(
             "Gold in Oman is quoted in Omani rials per gram and the rate is set "
             "nationally, so the same figure applies in Muscat, Salalah, Sohar "
             "and every other city. What differs between shops is the making "
             "charge on a finished piece, not the price of the gold itself."
         ),
-        units=GULF_UNITS,
-        cities=tuple(f"/gold-rates/{slug}.html" for slug, _ in OMAN_CITIES),
-        keywords=(
-            "gold rate oman, gold rate today muscat, oman gold price, "
-            "22k gold rate oman, 24k gold price oman, gold rate salalah"
+    ),
+    Market(
+        region="UAE",
+        place="the UAE",
+        hub_path="/uae-gold-prices",
+        locale="en_AE",
+        tz_offset_hours=4.0,
+        tz_label="GST",
+        blurb=(
+            "Gold in the UAE is quoted in dirhams per gram and the rate is set "
+            "federally, so Dubai, Abu Dhabi, Sharjah and Ajman all trade at the "
+            "same figure. The UAE is the only market here that also quotes 14K."
         ),
     ),
-]
-_PAGE_LIST.extend(_oman_city(slug, name) for slug, name in OMAN_CITIES)
+    Market(
+        region="Qatar",
+        place="Qatar",
+        hub_path="/qatar-gold-prices",
+        locale="en_QA",
+        tz_offset_hours=3.0,
+        tz_label="AST",
+        blurb=(
+            "Gold in Qatar is quoted in Qatari riyals per gram, with Doha's Gold "
+            "Souq in Souq Waqif the best-known place to buy."
+        ),
+    ),
+    Market(
+        region="Saudi Arabia",
+        place="Saudi Arabia",
+        hub_path="/saudi-arabia-gold-prices",
+        locale="en_SA",
+        tz_offset_hours=3.0,
+        tz_label="AST",
+        blurb=(
+            "Gold in Saudi Arabia is quoted in riyals per gram and priced "
+            "nationally, from Riyadh and Jeddah to the smaller souqs."
+        ),
+    ),
+    Market(
+        region="Bahrain",
+        place="Bahrain",
+        hub_path="/bahrain-gold-prices",
+        locale="en_BH",
+        tz_offset_hours=3.0,
+        tz_label="AST",
+        blurb=(
+            "Gold in Bahrain is quoted in Bahraini dinars per gram. The dinar is "
+            "one of the highest-valued currencies in the world, so the per-gram "
+            "figure looks small next to its neighbours - it is the same metal at "
+            "the same world price."
+        ),
+    ),
+    Market(
+        region="Kuwait",
+        place="Kuwait",
+        hub_path="/kuwait-gold-prices",
+        locale="en_KW",
+        tz_offset_hours=3.0,
+        tz_label="AST",
+        blurb=(
+            "Gold in Kuwait is quoted in Kuwaiti dinars per gram, with the Gold "
+            "Souq in Kuwait City the main retail market."
+        ),
+    ),
+    Market(
+        region="India",
+        place="India",
+        hub_path="/india-gold-prices",
+        locale="en_IN",
+        tz_offset_hours=5.5,
+        tz_label="IST",
+        units=INDIA_UNITS,
+        blurb=(
+            "Gold in India is quoted in rupees per gram, and jewellery is usually "
+            "priced per sovereign (pavan) of 8 grams or per 10 grams. The rate "
+            "below is the national figure; state and city totals differ by local "
+            "taxes and making charges rather than by the price of the metal."
+        ),
+    ),
+)
 
-PAGES: Dict[str, PageSpec] = {spec.path: spec for spec in _PAGE_LIST}
+MARKETS_BY_REGION: Dict[str, Market] = {market.region: market for market in MARKETS}
+
+
+# Cities and states, as (path, display name, blurb). Every one of them reads its
+# country's rate: see the note above on why that is correct and how it is said.
+#
+# The four Oman .html paths and the eleven India state .html paths are kept
+# exactly as they are. Those URLs already rank - Salalah at 9.24, Muscat at
+# 9.09 - and a new URL would restart from zero.
+_CITIES: Dict[str, Tuple[Tuple[str, str, str], ...]] = {
+    "Oman": (
+        ("/gold-rates/muscat.html", "Muscat",
+         "Muscat is Oman's capital and its largest gold market, with the Mutrah "
+         "souq in the old port district the best-known place to buy."),
+        ("/gold-rates/salalah.html", "Salalah",
+         "Salalah is the capital of Dhofar in Oman's far south, and the main "
+         "gold-buying centre outside the Muscat area."),
+        ("/gold-rates/sohar.html", "Sohar",
+         "Sohar is the principal city of Al Batinah North, on the coast between "
+         "Muscat and the UAE border."),
+        ("/gold-rates/nizwa.html", "Nizwa",
+         "Nizwa sits inland in Ad Dakhiliyah and is known for its historic souq, "
+         "long a centre for Omani silver and gold craftsmanship."),
+        ("/gold-rates/sur.html", "Sur",
+         "Sur is the coastal capital of Ash Sharqiyah South, east of Muscat."),
+        ("/gold-rates/ibri.html", "Ibri",
+         "Ibri is the main town of Ad Dhahirah, in Oman's north-west interior."),
+        ("/gold-rates/barka.html", "Barka",
+         "Barka lies in Al Batinah South, on the coast a short drive north-west "
+         "of Muscat."),
+    ),
+    "UAE": (
+        ("/dubai-gold-prices", "Dubai",
+         "Dubai is the largest gold market in the region, and the Gold Souq in "
+         "Deira is its best-known retail centre."),
+        ("/abu-dhabi-gold-prices", "Abu Dhabi",
+         "Abu Dhabi is the UAE capital, with Madinat Zayed a long-established "
+         "gold shopping destination."),
+        ("/sharjah-gold-prices", "Sharjah",
+         "Sharjah borders Dubai and has its own Central Souq gold trade."),
+        ("/ajman-gold-prices", "Ajman",
+         "Ajman is the smallest emirate, immediately north of Sharjah."),
+    ),
+    "India": (
+        ("/mumbai-gold-prices", "Mumbai",
+         "Mumbai is India's bullion trading centre, with Zaveri Bazaar its "
+         "historic jewellery market."),
+        ("/bangalore-gold-prices", "Bangalore",
+         "Bangalore is the largest gold market in Karnataka."),
+        ("/chennai-gold-prices", "Chennai",
+         "Chennai is a major South Indian gold market, where jewellery is "
+         "commonly priced per sovereign."),
+        ("/hyderabad-gold-prices", "Hyderabad",
+         "Hyderabad has a long jewellery tradition centred on Charminar."),
+        ("/pune-gold-prices", "Pune",
+         "Pune is one of Maharashtra's largest gold retail markets."),
+        ("/gold-rates/kerala.html", "Kerala",
+         "Kerala buys gold by the pavan of 8 grams, and per-pavan pricing is how "
+         "rates are usually quoted in the state."),
+        ("/gold-rates/tamil-nadu.html", "Tamil Nadu",
+         "Tamil Nadu, like neighbouring Kerala, prices jewellery by the sovereign."),
+        ("/gold-rates/karnataka.html", "Karnataka",
+         "Karnataka's gold trade centres on Bangalore."),
+        ("/gold-rates/maharashtra.html", "Maharashtra",
+         "Maharashtra contains Mumbai, India's bullion trading hub."),
+        ("/gold-rates/delhi.html", "Delhi",
+         "Delhi's jewellery trade centres on Karol Bagh and Chandni Chowk."),
+        ("/gold-rates/west-bengal.html", "West Bengal",
+         "West Bengal's gold trade centres on Kolkata's Bowbazar."),
+        ("/gold-rates/gujarat.html", "Gujarat",
+         "Gujarat has major jewellery markets in Ahmedabad, Surat and Rajkot."),
+        ("/gold-rates/rajasthan.html", "Rajasthan",
+         "Rajasthan's jewellery trade centres on Jaipur, long known for "
+         "gemstone and gold work."),
+        ("/gold-rates/andhra-pradesh.html", "Andhra Pradesh",
+         "Andhra Pradesh, like the rest of South India, commonly prices "
+         "jewellery per sovereign."),
+        ("/gold-rates/punjab.html", "Punjab",
+         "Punjab's gold retail centres on Ludhiana and Amritsar."),
+        ("/gold-rates/uttar-pradesh.html", "Uttar Pradesh",
+         "Uttar Pradesh is India's most populous state, with major gold markets "
+         "in Lucknow, Kanpur and Varanasi."),
+    ),
+}
+
+
+def _keywords(place: str, country: str) -> str:
+    low = place.lower()
+    return (
+        f"gold rate {low}, {low} gold price today, 22k gold rate {low}, "
+        f"24k gold price {low}, gold rate {country.lower()}"
+    )
+
+
+def _build_pages() -> List[PageSpec]:
+    pages: List[PageSpec] = []
+    for market in MARKETS:
+        cities = _CITIES.get(market.region, ())
+        pages.append(PageSpec(
+            path=market.hub_path,
+            region=market.region,
+            place=market.place,
+            kind="country",
+            locale=market.locale,
+            country=market.place,
+            blurb=market.blurb,
+            units=market.units,
+            cities=tuple(path for path, _, _ in cities),
+            keywords=_keywords(market.place, market.place),
+            tz_offset_hours=market.tz_offset_hours,
+            tz_label=market.tz_label,
+        ))
+        for path, name, blurb in cities:
+            pages.append(PageSpec(
+                path=path,
+                region=market.region,
+                place=name,
+                kind="city",
+                locale=market.locale,
+                country=market.place,
+                blurb=blurb,
+                units=market.units,
+                parent=market.hub_path,
+                keywords=_keywords(name, market.place),
+                tz_offset_hours=market.tz_offset_hours,
+                tz_label=market.tz_label,
+            ))
+    return pages
+
+
+PAGES: Dict[str, PageSpec] = {spec.path: spec for spec in _build_pages()}
 
 
 def get_page(path: str) -> Optional[PageSpec]:
@@ -1085,23 +1242,10 @@ gtag('config', '{GA_MEASUREMENT_ID}');
 # URL production already publishes is kept: nothing is dropped from the index by
 # this change.
 
+# Everything production publishes that the renderer does NOT own. The rate pages
+# come from PAGES below, so listing them here too would duplicate all 34.
 SITEMAP_STATIC: Tuple[Tuple[str, str, str], ...] = (
     ("/", "hourly", "1.0"),
-    ("/india-gold-prices", "daily", "0.9"),
-    ("/uae-gold-prices", "daily", "0.9"),
-    ("/qatar-gold-prices", "daily", "0.9"),
-    ("/saudi-arabia-gold-prices", "daily", "0.9"),
-    ("/bahrain-gold-prices", "daily", "0.9"),
-    ("/kuwait-gold-prices", "daily", "0.9"),
-    ("/dubai-gold-prices", "daily", "0.9"),
-    ("/abu-dhabi-gold-prices", "daily", "0.9"),
-    ("/sharjah-gold-prices", "daily", "0.9"),
-    ("/ajman-gold-prices", "daily", "0.9"),
-    ("/mumbai-gold-prices", "daily", "0.8"),
-    ("/bangalore-gold-prices", "daily", "0.8"),
-    ("/chennai-gold-prices", "daily", "0.8"),
-    ("/hyderabad-gold-prices", "daily", "0.8"),
-    ("/pune-gold-prices", "daily", "0.8"),
     ("/gold-prediction", "daily", "0.9"),
     ("/trends", "daily", "0.8"),
     ("/calculator", "weekly", "0.7"),
@@ -1112,23 +1256,6 @@ SITEMAP_STATIC: Tuple[Tuple[str, str, str], ...] = (
     ("/contact", "monthly", "0.5"),
     ("/privacy", "monthly", "0.5"),
     ("/terms", "monthly", "0.5"),
-)
-
-# The India state pages T1.1 set to noindex. They stay in the sitemap so Google
-# recrawls them and sees the directive; a noindex on a page Google never revisits
-# does nothing. They come off this list when they move onto the renderer.
-SITEMAP_STATIC_RATE_PAGES: Tuple[str, ...] = (
-    "/gold-rates/kerala.html",
-    "/gold-rates/tamil-nadu.html",
-    "/gold-rates/karnataka.html",
-    "/gold-rates/maharashtra.html",
-    "/gold-rates/delhi.html",
-    "/gold-rates/west-bengal.html",
-    "/gold-rates/gujarat.html",
-    "/gold-rates/rajasthan.html",
-    "/gold-rates/andhra-pradesh.html",
-    "/gold-rates/punjab.html",
-    "/gold-rates/uttar-pradesh.html",
 )
 
 
@@ -1174,9 +1301,6 @@ def render_sitemap(
     for spec in PAGES.values():
         priority = "0.9" if spec.kind == "country" else "0.8"
         entries.append(_sitemap_entry(spec.path, rate_lastmod, "daily", priority))
-
-    for path in SITEMAP_STATIC_RATE_PAGES:
-        entries.append(_sitemap_entry(path, fallback, "daily", "0.5"))
 
     for slug, published in articles:
         stamp = published

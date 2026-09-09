@@ -495,9 +495,14 @@ class TestSitemap(unittest.TestCase):
                      "/why-gold-price-is-increasing-2026", "/about", "/terms"):
             with self.subTest(path=path):
                 self.assertIn(f"<loc>{BASE}{path}</loc>", self.xml)
-        for path in rate_pages.SITEMAP_STATIC_RATE_PAGES:
-            with self.subTest(path=path):
-                self.assertIn(f"<loc>{BASE}{path}</loc>", self.xml)
+        # The 11 India state URLs, which used to be static files and are now
+        # rendered. Listed literally so this test still fails if they fall out
+        # of the registry rather than quietly following it.
+        for state in ("kerala", "tamil-nadu", "karnataka", "maharashtra", "delhi",
+                      "west-bengal", "gujarat", "rajasthan", "andhra-pradesh",
+                      "punjab", "uttar-pradesh"):
+            with self.subTest(state=state):
+                self.assertIn(f"<loc>{BASE}/gold-rates/{state}.html</loc>", self.xml)
 
     def test_news_articles_are_included(self):
         """T2.8: no article URL appears in the live sitemap at all."""
@@ -511,6 +516,41 @@ class TestSitemap(unittest.TestCase):
     def test_falls_back_to_now_when_the_feed_is_empty(self):
         xml = rate_pages.render_sitemap(None, now=NOW)
         self.assertIn("2026-09-09T10:20:00Z", xml)
+
+
+class TestNoStaticRatePagesRemain(unittest.TestCase):
+    """What is left of tests/test_seo_static.py, which this suite replaced.
+
+    All 15 files under frontend/public/gold-rates/ were hardcoded-price pages;
+    T1.1 stripped their figures and noindexed them, and every one of those URLs
+    is now rendered live instead. A file reappearing there would be shadowed by
+    the Caddy @rendered matcher and diverge silently from the page users get -
+    so the guard is that the directory stays empty of them.
+    """
+
+    RATE_PAGES_DIR = REPO / "frontend" / "public" / "gold-rates"
+
+    def test_no_static_rate_page_shadows_a_rendered_one(self):
+        rendered = set(rate_pages.PAGES)
+        for path in self.RATE_PAGES_DIR.glob("*.html"):
+            with self.subTest(file=path.name):
+                self.assertNotIn(
+                    f"/gold-rates/{path.name}",
+                    rendered,
+                    f"{path.name} exists as a file and as a rendered route; "
+                    f"Caddy serves the rendered one, so the file is dead code",
+                )
+
+    def test_no_static_rate_page_ships_a_hardcoded_price(self):
+        """T1.1 acceptance, kept alive: eleven of these once published an
+        identical rupee figure that was 10.22% above the national rate."""
+        for path in self.RATE_PAGES_DIR.glob("*.html"):
+            with self.subTest(file=path.name):
+                markup = path.read_text(encoding="utf-8")
+                self.assertIsNone(
+                    re.search(r"[₹$]\s?[0-9][0-9,]{2,}", markup),
+                    f"{path.name} contains a hardcoded price figure",
+                )
 
 
 class TestNoAnalyticsRegression(unittest.TestCase):

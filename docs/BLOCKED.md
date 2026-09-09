@@ -10,9 +10,14 @@
 > Caddy, ahead of the catch-all proxy — the same precedence trick the Caddyfile already used
 > for `/gold-rates/*`. See `backend/rate_pages.py`.
 >
-> Live for the Oman cluster: `/oman-gold-prices` and seven city pages, four of which keep the
-> `.html` URLs that already rank at ~9.0. Route 3 below — rebuilding the Next source — remains
-> the eventual convergence, with the renderer's templates as its spec.
+> **All 34 rate pages** are live on it — 7 country pages, 4 emirates, 5 India cities, 7 Oman
+> cities and the 11 India state pages — at their existing URLs, in their own currencies. The
+> 15 files under `frontend/public/gold-rates/` are deleted; those URLs are rendered now.
+>
+> Route 3 below — rebuilding the Next source — remains the eventual convergence, with the
+> renderer's templates as its spec. What is still blocked is everything on the pages this
+> renderer does **not** own: the homepage, `/trends`, `/gold-prediction`, `/about`, the auth
+> routes, the shared nav and ticker, and `robots.ts`.
 
 ## The blocker
 
@@ -150,15 +155,15 @@ missing frontend source · **Owner** — needs a real-world fact only the owner 
 | T1.2 permanent `0.00%` | **Partial** | Backend fixed. Rendered pages now show "No prior close to compare" instead of `0.00%`; the Next-served pages still print it |
 | T1.3 no timestamp | **Partial** | API returns feed-fetch `updated_at` + `feed_stale`. Rendered pages display it (`Updated: 9 Sep 2026, 14:20 GST`); Next-served pages do not |
 | T1.4 freshness claims | **Partial / Owner** | Removed from all 15 static pages. Homepage/`/about`/`/contact` blocked. True cadence lives in the Prefect repo |
-| T1.5 Chennai = national rate | Blocked | Confirmed measured. Needs the city page source |
+| T1.5 Chennai = national rate | **Done** | `/chennai-gold-prices` is rendered and states plainly that the figure is the national India rate |
 | T1.6 fake USD demo | Blocked | Needs homepage source |
 
 ### Phase 2 — Indexability
 
 | Task | Status | Notes |
 |---|---|---|
-| T2.1 duplicate emirate pages | Blocked | Confirmed: identical 5 AED prices across all four |
-| T2.2 state pages orphaned | **Partial** | Moot short-term (now `noindex`). Shared layout / index page / breadcrumbs blocked |
+| T2.1 duplicate emirate pages | **Done** | All four rendered; the shared AED rate is labelled as federal rather than presented as four local rates |
+| T2.2 state pages orphaned | **Done** | Rendered pages share a layout, carry `BreadcrumbList`, and cross-link to every sibling plus the hub |
 | T2.3 two templates | **Partial** | Resolved for Oman: one renderer now serves both the country page and the `.html` city URLs |
 | T2.4 trailing slash | Blocked | Needs `next.config` + link components |
 | T2.5 no hreflang | Blocked | Confirmed 0 hreflang tags sitewide |

@@ -397,10 +397,11 @@ Zero silver anywhere on the site. `mintjewels.ae` runs Silver 999 and Silver 925
 gap: 87 non-brand queries rank 4-10 and convert at 0.57% because the snippet never carries the
 number the searcher asked for. See `docs/search-console-2026-09.md`.
 
-**Shipped** for `/oman-gold-prices` and the seven Oman city pages, via the server-side
-renderer in `backend/rate_pages.py` (titles now read `Gold Rate in Muscat Today - 22K OMR
-53.25/g · 9 Sep`, 51 chars). Every other rate page still needs it and is blocked on the
-missing frontend source.
+**Shipped on all 34 rate pages** via the server-side renderer in `backend/rate_pages.py` —
+every country, emirate, city and state page, in its own currency and local date. Titles now
+read `Gold Rate in Muscat Today - 22K OMR 52.80/g · 9 Sep` (51 chars) and
+`Gold Rate in Kerala Today - 22K INR 14,240/g · 9 Sep` (52). The homepage, `/trends` and
+`/gold-prediction` still need it and are blocked on the missing frontend source.
 
 Competitors put the date in the title: *"Gold Rate Today in Kerala 2nd September 2026"*, *"Todays Gold Rate in Kerala, 22 & 24 Carat (03 September 2026)"*. It's a strong freshness signal for "gold rate today" queries.
 
