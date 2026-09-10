@@ -1,0 +1,59 @@
+# The whole site, locally, routed exactly as production routes it.
+#
+#   docker compose -f docker-compose.dev.yml up --build
+#   open http://localhost:8080
+#
+# Why this exists as well as docker-compose.local.yml: that one runs both
+# production images unchanged, for parity testing. This one runs the backend
+# from local source with the production frontend image in front of it, which is
+# the only combination that shows the rate pages as they will actually be
+# served -- the renderer answering some URLs and Next answering the rest, with
+# Caddy deciding which (backend/rate_pages.py, ./Caddyfile).
+#
+# The frontend is deliberately the published :latest image, not a local build.
+# The source in this repo produces 6 of the 34 live routes, so building it would
+# 404 the rest and the nav would be broken everywhere (docs/BLOCKED.md). That
+# image is the surviving copy of the working UI.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - backend
+      - frontend
+
+  backend:
+    build: ./backend
+    environment:
+      - DATABASE_URL=sqlite:////app/data/goldrate.db
+      - FRED_API_KEY=${FRED_API_KEY:-}
+      # The local database is a snapshot, so its newest row is however old the
+      # snapshot is. At the production default of 60 the guardrail would call
+      # the feed stale and every rate page would correctly render its empty
+      # state and noindex -- which is right in production and useless for
+      # looking at the pages. 1440 puts the staleness threshold at 48 hours.
+      #
+      # The prices shown are therefore as fresh as ./backend/data/goldrate.db
+      # is, and the "Updated:" line on each page says exactly when that was.
+      - FEED_REFRESH_CADENCE_MINUTES=${FEED_REFRESH_CADENCE_MINUTES:-1440}
+    volumes:
+      - ./backend/data:/app/data
+
+  frontend:
+    image: midhunpottammal/gold-price-watch-frontend:latest
+    environment:
+      # This image was built with NEXT_PUBLIC_API_URL baked into the client
+      # bundle, so browser-side fetches on the Next pages go to the production
+      # API regardless of what is set here. Server-side rendering uses
+      # SSR_API_URL and does reach the local backend.
+      - SSR_API_URL=http://backend:8000
+      - NEXT_PUBLIC_API_KEY=${NEXT_PUBLIC_API_KEY:-}
+      - SSR_API_KEY=${SSR_API_KEY:-}
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL:-}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+    depends_on:
+      - backend

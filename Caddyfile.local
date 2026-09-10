@@ -1,0 +1,48 @@
+# Local mirror of the production Caddyfile: same handle blocks, same order,
+# no TLS and no ACME. Used by docker-compose.dev.yml so the routing can be
+# exercised before it reaches the server, where the real Caddyfile is
+# hand-managed and edited by the deploy workflow.
+#
+# Keep the handle blocks in step with ./Caddyfile. The order is the whole point:
+# `handle` matches top to bottom, so /gold-rates/* and the @rendered paths reach
+# the backend renderer and everything else falls through to Next.
+
+:8080 {
+	# Backend API
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+
+	# Server-rendered rate pages and sitemap (backend/rate_pages.py).
+	handle /gold-rates/* {
+		reverse_proxy backend:8000
+	}
+
+	@rendered path /oman-gold-prices \
+	               /uae-gold-prices \
+	               /qatar-gold-prices \
+	               /saudi-arabia-gold-prices \
+	               /bahrain-gold-prices \
+	               /kuwait-gold-prices \
+	               /india-gold-prices \
+	               /dubai-gold-prices \
+	               /abu-dhabi-gold-prices \
+	               /sharjah-gold-prices \
+	               /ajman-gold-prices \
+	               /mumbai-gold-prices \
+	               /bangalore-gold-prices \
+	               /chennai-gold-prices \
+	               /hyderabad-gold-prices \
+	               /pune-gold-prices \
+	               /sitemap.xml
+	handle @rendered {
+		reverse_proxy backend:8000
+	}
+
+	# Frontend Next.js
+	handle /* {
+		reverse_proxy frontend:3000
+	}
+
+	encode gzip
+}
