@@ -367,6 +367,17 @@ def health_check():
     return {"status": "ok"}
 
 
+# Same check, reachable from outside. Caddy proxies only /api/* to this service
+# and forwards the path unchanged, so /health is unreachable in production and
+# https://goldpricewatch.com/api/health -- the URL the deploy workflow polls as
+# HEALTHCHECK_URL, and the one documented in its header -- was returning 404.
+# The smoke test retries it twelve times and then fails the run, after the
+# deploy has already happened.
+@app.get("/api/health")
+def api_health_check():
+    return {"status": "ok"}
+
+
 @app.get("/api/rates")
 def read_rates(
     db: Session = Depends(get_db),
