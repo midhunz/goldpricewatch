@@ -169,7 +169,7 @@ missing frontend source · **Owner** — needs a real-world fact only the owner 
 | T2.5 no hreflang | Blocked | Confirmed 0 hreflang tags sitewide |
 | T2.6 `/signup` indexable | Blocked | **Widen this task:** `/login`, `/account`, `/admin`, `/portfolio` are also `index, follow` |
 | T2.7 hardcoded `lastmod` *(new)* | **Done** | `/sitemap.xml` is served by the backend from the real newest `gold_rates.created_at` |
-| T2.8 news articles missing from sitemap *(new)* | **Done** | Article URLs enumerated from `gold_news` in the backend sitemap |
+| T2.8 news articles missing from sitemap *(new)* | **Deliberately open** | Entries are built and gated behind `PUBLISH_NEWS_IN_SITEMAP`. Every article canonicalises to `/gold-news-today/undefined`, a soft 404, so listing them would submit 496 URLs claiming to be one contentless page. Enable with the template fix |
 
 ### Phase 3 — On-page
 

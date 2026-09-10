@@ -109,6 +109,34 @@ one line each in the registry.
 
 ---
 
+## Found while smoke-testing: the news section cannot be indexed
+
+Not in the report, and worse than anything in it. Measured on the live site,
+10 September 2026, across every article under `/gold-news-today/`:
+
+- every one canonicalises to `https://goldpricewatch.com/gold-news-today/undefined`
+- every one carries the same `<title>`, "Gold News Today"
+- none has an `<h1>`
+- `/gold-news-today/undefined` itself returns **200**, so it is a soft 404
+
+Each article tells Google it is a duplicate of one contentless URL. Nothing in
+that section can rank, whatever is written in it.
+
+It is not currently doing damage, for an unrelated reason: the news index renders
+its article links client-side, so a crawler following links finds **none** of
+them, and production's sitemap lists **none** of them either. The section is
+close to invisible rather than badly indexed.
+
+That matters for `T2.8`. Listing the 496 articles in the sitemap — which is what
+T2.8 asks for and what the first version of this work did — would not get them
+indexed. It would hand Google 496 URLs all pointing at the same soft 404. The
+entries are built and gated behind `PUBLISH_NEWS_IN_SITEMAP` in
+`backend/rate_pages.py`; flip it in the same change that gives the article
+template a self-referencing canonical and a real title. That template is in the
+missing Next source.
+
+---
+
 ## What the report recommends that we deliberately did not do
 
 The report's Finding 2 recommends `noindex` on roughly 20 India and Saudi URLs — 97,085

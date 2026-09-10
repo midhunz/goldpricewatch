@@ -616,9 +616,29 @@ class TestSitemap(unittest.TestCase):
             with self.subTest(state=state):
                 self.assertIn(f"<loc>{BASE}/gold-rates/{state}.html</loc>", self.xml)
 
-    def test_news_articles_are_included(self):
-        """T2.8: no article URL appears in the live sitemap at all."""
-        self.assertIn(f"<loc>{BASE}/gold-news-today/gold-hits-record</loc>", self.xml)
+    def test_news_articles_are_withheld_while_their_pages_are_broken(self):
+        """T2.8 stays open on purpose - see PUBLISH_NEWS_IN_SITEMAP.
+
+        Every article on the live site canonicalises to
+        /gold-news-today/undefined, which returns 200 with no content. Listing
+        them would hand Google 496 URLs all claiming to be the same soft 404.
+        """
+        self.assertFalse(rate_pages.PUBLISH_NEWS_IN_SITEMAP)
+        self.assertNotIn("/gold-news-today/gold-hits-record", self.xml)
+
+    def test_the_article_entries_are_built_and_ready_to_enable(self):
+        """The gate is one flag, not missing code: flip it with the page fix."""
+        original = rate_pages.PUBLISH_NEWS_IN_SITEMAP
+        rate_pages.PUBLISH_NEWS_IN_SITEMAP = True
+        try:
+            xml = rate_pages.render_sitemap(
+                self.updated,
+                articles=[("gold-hits-record", datetime(2026, 9, 1, 12, 0))],
+                now=NOW,
+            )
+        finally:
+            rate_pages.PUBLISH_NEWS_IN_SITEMAP = original
+        self.assertIn(f"<loc>{BASE}/gold-news-today/gold-hits-record</loc>", xml)
 
     def test_no_url_is_listed_twice(self):
         locs = re.findall(r"<loc>([^<]+)</loc>", self.xml)

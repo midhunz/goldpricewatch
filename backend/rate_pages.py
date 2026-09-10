@@ -1439,6 +1439,29 @@ SITEMAP_STATIC: Tuple[Tuple[str, str, str], ...] = (
 )
 
 
+# T2.8 says no /gold-news-today/[slug] article appears in the sitemap, and that
+# is true. It stays that way for now, because submitting them would be worse
+# than the gap.
+#
+# Measured on the live site, 10 Sep 2026, across every article:
+#   - every one canonicalises to https://goldpricewatch.com/gold-news-today/undefined
+#   - every one has the same <title>, "Gold News Today"
+#   - none has an H1
+#   - /gold-news-today/undefined itself returns 200, so it is a soft 404
+#
+# Each article therefore tells Google it is a duplicate of a single contentless
+# URL. Listing 496 of them in the sitemap would not get them indexed; it would
+# hand Google 496 URLs that all point at one soft 404. Today they are close to
+# unreachable anyway - the news index renders its links client-side, so a
+# crawler finds none of them - which is a bug, and the reason it is not an
+# urgent one.
+#
+# The article template is in the missing Next source (docs/BLOCKED.md). Flip
+# this to True in the same change that gives those pages a self-referencing
+# canonical and a real title; render_sitemap already builds the entries.
+PUBLISH_NEWS_IN_SITEMAP = False
+
+
 def _sitemap_entry(path: str, lastmod: str, changefreq: str, priority: str) -> str:
     return (
         "<url>"
@@ -1482,7 +1505,7 @@ def render_sitemap(
         priority = "0.9" if spec.kind == "country" else "0.8"
         entries.append(_sitemap_entry(spec.path, rate_lastmod, "daily", priority))
 
-    for slug, published in articles:
+    for slug, published in (articles if PUBLISH_NEWS_IN_SITEMAP else ()):
         stamp = published
         if stamp.tzinfo is None:
             stamp = stamp.replace(tzinfo=timezone.utc)
