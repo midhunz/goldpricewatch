@@ -18,7 +18,10 @@ name: Deploy
 # Required REPOSITORY secrets (not environment secrets -- the guardrails job has
 # no environment binding and cannot see those):
 #   DOCKERHUB_USERNAME  DOCKERHUB_TOKEN
-#   DROPLET_HOST        DROPLET_USER      DROPLET_SSH_KEY
+#   DROPLET_HOST        DROPLET_USER      DROPLET_PASSWORD
+#
+# The droplet does not accept key auth -- it is password-only, so the SSH steps
+# below authenticate with DROPLET_PASSWORD rather than a private key.
 # Required repository variables:
 #   HEALTHCHECK_URL       e.g. https://goldpricewatch.com/api/health
 #   NEXT_PUBLIC_API_URL   e.g. https://goldpricewatch.com/api
@@ -95,13 +98,13 @@ jobs:
         env:
           DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
           DROPLET_USER: ${{ secrets.DROPLET_USER }}
-          DROPLET_SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
+          DROPLET_PASSWORD: ${{ secrets.DROPLET_PASSWORD }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           HEALTHCHECK_URL: ${{ vars.HEALTHCHECK_URL }}
         run: |
           missing=""
-          for name in DROPLET_HOST DROPLET_USER DROPLET_SSH_KEY \
+          for name in DROPLET_HOST DROPLET_USER DROPLET_PASSWORD \
                       DOCKERHUB_USERNAME DOCKERHUB_TOKEN HEALTHCHECK_URL; do
             if [ -z "${!name}" ]; then
               missing="$missing $name"
@@ -250,7 +253,7 @@ jobs:
         with:
           host: ${{ secrets.DROPLET_HOST }}
           username: ${{ secrets.DROPLET_USER }}
-          key: ${{ secrets.DROPLET_SSH_KEY }}
+          password: ${{ secrets.DROPLET_PASSWORD }}
           script_stop: true
           envs: DEPLOY_PATH
           script: |
@@ -412,7 +415,7 @@ jobs:
         with:
           host: ${{ secrets.DROPLET_HOST }}
           username: ${{ secrets.DROPLET_USER }}
-          key: ${{ secrets.DROPLET_SSH_KEY }}
+          password: ${{ secrets.DROPLET_PASSWORD }}
           script_stop: true
           envs: IMAGE_TAG,DEPLOY_PATH
           script: |
