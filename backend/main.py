@@ -30,6 +30,7 @@ from model_trainer import (
     compute_feature_drift,
 )
 from drift import get_concept_drift_status
+import rate_pages
 from rate_utils import (
     canonical_purity,
     parse_price,
@@ -366,6 +367,17 @@ def health_check():
     return {"status": "ok"}
 
 
+# Same check, reachable from outside. Caddy proxies only /api/* to this service
+# and forwards the path unchanged, so /health is unreachable in production and
+# https://goldpricewatch.com/api/health -- the URL the deploy workflow polls as
+# HEALTHCHECK_URL, and the one documented in its header -- was returning 404.
+# The smoke test retries it twelve times and then fails the run, after the
+# deploy has already happened.
+@app.get("/api/health")
+def api_health_check():
+    return {"status": "ok"}
+
+
 @app.get("/api/rates")
 def read_rates(
     db: Session = Depends(get_db),
@@ -501,35 +513,243 @@ def read_rates_history(
     # Calculate cutoff date
     cutoff_date = datetime.now() - timedelta(days=days)
     
-    # Query rates
+    # Query rates. The purity filter is on the canonical form, not the raw label:
+    # the same karat reaches this table as both "22 Carat" and "22K" depending on
+    # which scrape wrote the row (see canonical_purity), so an exact-match filter
+    # silently returns half the series.
+    wanted_purity = canonical_purity(purity)
     rates = db.query(GoldRate).filter(
         GoldRate.region == region,
-        GoldRate.purity == purity,
         GoldRate.created_at >= cutoff_date
     ).order_by(GoldRate.created_at.asc()).all()
-    
-    # Parse prices and format response
+
+    # Parse prices and format response.
+    #
+    # This used to fall back to 0.0 on a parse failure, which put a point on the
+    # x-axis instead of leaving a gap — a chart that plunges to zero and back for
+    # every bad row. parse_price returns None for exactly those rows (and for
+    # zero/negative prices, per T7.1), so drop them: a missing point is honest,
+    # a zero is a lie about the price of gold.
     history = []
+    dropped = 0
     for rate in rates:
-        # Parse price string to float
-        price_val = 0.0
-        if rate.price:
-            clean = rate.price
-            if "₹" in clean:
-                clean = clean.split("₹")[0]
-            clean = clean.replace(",", "").strip()
-            try:
-                price_val = float(clean)
-            except ValueError:
-                pass
-        
+        if canonical_purity(rate.purity) != wanted_purity:
+            continue
+        price_val = parse_price(rate.price)
+        if price_val is None:
+            dropped += 1
+            continue
+
         history.append({
             "timestamp": rate.created_at.isoformat(),
             "price": price_val,
             "currency": rate.currency
         })
-        
+
+    if dropped:
+        logger.warning(
+            f"HISTORY: dropped {dropped} unusable row(s) for {region}/{wanted_purity} "
+            f"over {days}d; {len(history)} point(s) returned"
+        )
+
     return history
+
+
+# ============== Server-rendered rate pages ==============
+#
+# These serve real HTML pages, not JSON, and Caddy routes their paths here ahead
+# of the catch-all proxy to Next. See backend/rate_pages.py for why they exist:
+# the Search Console data says the site ranks and is not clicked, the fix is a
+# live price and today's date in the title, and the Next source for those routes
+# is not in this repository (docs/BLOCKED.md).
+#
+# No API key on these: they are public web pages. Everything under /api/ keeps
+# its key, and robots.txt keeps disallowing /api/.
+
+
+def _load_snapshot(db: Session, region: str) -> rate_pages.RateSnapshot:
+    """Latest verified rates for one market, with day-over-day movement.
+
+    Deliberately mirrors read_rates() rather than calling it: that endpoint is
+    behind an API key, returns every region at once, and caches a shape built for
+    the frontend. The guardrail behaviour is what matters and it is shared, since
+    both go through parse_price / canonical_purity / is_feed_stale.
+    """
+    recent = (
+        db.query(GoldRate)
+        .filter(GoldRate.region == region)
+        .order_by(GoldRate.created_at.desc())
+        .limit(200)
+        .all()
+    )
+
+    latest_by_purity = {}
+    for row in recent:
+        key = canonical_purity(row.purity)
+        if key and key not in latest_by_purity:
+            latest_by_purity[key] = row
+
+    if not latest_by_purity:
+        logger.error(f"RATE PAGE: no rows at all for region {region!r}")
+        return rate_pages.RateSnapshot(region, "", {}, {}, None, False)
+
+    latest_time = max(row.created_at for row in latest_by_purity.values())
+    stale = is_feed_stale(latest_time)
+    if stale:
+        logger.error(
+            f"RATE PAGE: {region} feed is {feed_age(latest_time)} old "
+            f"(> {FEED_STALE_AFTER}); page will render its empty state and noindex"
+        )
+
+    # Prior close, on the same 20-48h window read_rates uses.
+    history_rows = (
+        db.query(GoldRate)
+        .filter(
+            GoldRate.region == region,
+            GoldRate.created_at >= latest_time - timedelta(hours=48),
+            GoldRate.created_at <= latest_time - timedelta(hours=20),
+        )
+        .order_by(GoldRate.created_at.desc())
+        .all()
+    )
+    prior = {}
+    for row in history_rows:
+        key = canonical_purity(row.purity)
+        if key and key not in prior:
+            prior[key] = parse_price(row.price)
+
+    by_purity = {}
+    changes = {}
+    currency = ""
+    for key, row in latest_by_purity.items():
+        price = parse_price(row.price)
+        if price is None:
+            # T7.1: an unparseable or non-positive price is dropped, so the page
+            # renders one fewer karat rather than a zero.
+            logger.error(
+                f"RATE PAGE: dropping {region}/{key} - unusable price {row.price!r}"
+            )
+            continue
+        by_purity[key] = price
+        currency = currency or (row.currency or "")
+        previous = prior.get(key)
+        changes[key] = (
+            round(price - previous, 2)
+            if previous is not None and not stale
+            else None
+        )
+
+    # Log-only, as in read_rates: an out-of-band ratio is a signal for the
+    # operator, not a reason to show the reader nothing.
+    check_purity_ratio({region: by_purity})
+
+    return rate_pages.RateSnapshot(
+        region=region,
+        currency=currency,
+        by_purity=by_purity,
+        changes=changes,
+        updated_at=latest_time,
+        stale=stale,
+    )
+
+
+def _load_history(db: Session, region: str, days: int):
+    """{purity: [(timestamp, price)]} for the trend chart and history tables.
+
+    One query for every karat rather than one per karat: the tables show 22K and
+    24K side by side, and the rows are already in memory. Prices go through
+    parse_price, so an unusable row is dropped rather than plotted as zero.
+    """
+    rows = (
+        db.query(GoldRate)
+        .filter(
+            GoldRate.region == region,
+            GoldRate.created_at >= datetime.now() - timedelta(days=days),
+        )
+        .order_by(GoldRate.created_at.asc())
+        .all()
+    )
+    history: Dict[str, list] = defaultdict(list)
+    for row in rows:
+        purity = canonical_purity(row.purity)
+        if not purity:
+            continue
+        price = parse_price(row.price)
+        if price is None:
+            continue
+        history[purity].append((row.created_at, price))
+    return dict(history)
+
+
+def _render_rate_page(spec: rate_pages.PageSpec, db: Session) -> Response:
+    cache_key = f"ratepage:{spec.path}"
+    cached = ai_cache.get(cache_key)
+    if cached is not None:
+        return Response(content=cached, media_type="text/html; charset=utf-8")
+
+    snapshot = _load_snapshot(db, spec.region)
+    history = _load_history(db, spec.region, rate_pages.TREND_DAYS)
+    page = rate_pages.render_page(spec, snapshot, history)
+
+    # Five minutes, matching /api/rates. Long enough to absorb a crawl burst,
+    # short enough that the "Updated" stamp and the date in the title stay
+    # honest.
+    ai_cache.set(cache_key, page.html, ttl_seconds=300)
+    return Response(content=page.html, media_type="text/html; charset=utf-8")
+
+
+def _make_rate_page_endpoint(spec: rate_pages.PageSpec):
+    def endpoint(db: Session = Depends(get_db)) -> Response:
+        return _render_rate_page(spec, db)
+
+    endpoint.__name__ = "rate_page_" + spec.path.strip("/").replace("/", "_").replace(
+        ".", "_"
+    ).replace("-", "_")
+    return endpoint
+
+
+for _spec in rate_pages.PAGES.values():
+    app.add_api_route(
+        _spec.path,
+        _make_rate_page_endpoint(_spec),
+        methods=["GET"],
+        include_in_schema=False,
+        response_class=Response,
+    )
+
+
+@app.get("/sitemap.xml", include_in_schema=False, response_class=Response)
+def sitemap(db: Session = Depends(get_db)) -> Response:
+    """sitemap.xml with a lastmod that reflects when the data actually changed.
+
+    Overrides the compiled Next route handler, which stamps all 42 entries with
+    the build date - the newest of which is six months stale (T2.7). Nothing is
+    dropped from the index here; the news articles that appear in no sitemap at
+    all today are added (T2.8).
+    """
+    cached = ai_cache.get("sitemap")
+    if cached is not None:
+        return Response(content=cached, media_type="application/xml")
+
+    latest = (
+        db.query(GoldRate.created_at)
+        .order_by(GoldRate.created_at.desc())
+        .limit(1)
+        .scalar()
+    )
+    articles = [
+        (row.slug, row.published_at or row.created_at)
+        for row in db.query(GoldNews)
+        .filter(GoldNews.slug.isnot(None))
+        .order_by(GoldNews.published_at.desc())
+        .limit(500)
+        .all()
+        if row.slug
+    ]
+
+    xml = rate_pages.render_sitemap(latest, articles)
+    ai_cache.set("sitemap", xml, ttl_seconds=3600)
+    return Response(content=xml, media_type="application/xml")
 
 @app.get("/api/news")
 def get_news(

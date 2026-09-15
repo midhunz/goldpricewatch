@@ -1,6 +1,23 @@
 # Blocked work — and why
 
-**Date:** 5 September 2026
+**Date:** 5 September 2026 · **Updated:** 9 September 2026
+
+> **Update, 9 Sep 2026 — some of this is no longer blocked.**
+>
+> Search Console data arrived (`docs/search-console-2026-09.md`) and named the top fix:
+> a live price and today's date in every title, which is `T4.8`. It could not be made where
+> those pages live, so the rate pages are now **rendered by the backend** and routed to it by
+> Caddy, ahead of the catch-all proxy — the same precedence trick the Caddyfile already used
+> for `/gold-rates/*`. See `backend/rate_pages.py`.
+>
+> **All 34 rate pages** are live on it — 7 country pages, 4 emirates, 5 India cities, 7 Oman
+> cities and the 11 India state pages — at their existing URLs, in their own currencies. The
+> 15 files under `frontend/public/gold-rates/` are deleted; those URLs are rendered now.
+>
+> Route 3 below — rebuilding the Next source — remains the eventual convergence, with the
+> renderer's templates as its spec. What is still blocked is everything on the pages this
+> renderer does **not** own: the homepage, `/trends`, `/gold-prediction`, `/about`, the auth
+> routes, the shared nav and ticker, and `robots.ts`.
 
 ## The blocker
 
@@ -135,31 +152,31 @@ missing frontend source · **Owner** — needs a real-world fact only the owner 
 | Task | Status | Notes |
 |---|---|---|
 | T1.1 wrong `/gold-rates` prices | **Done** | All 15 files: `noindex`, every price removed, empty state, fabricated-timestamp JS deleted. Regression tests added |
-| T1.2 permanent `0.00%` | **Partial** | Backend fixed: purity-key normalisation + `null` instead of `0.0`. Rendering the null as "nothing" needs the frontend |
-| T1.3 no timestamp | **Partial** | API now returns feed-fetch `updated_at` and a `feed_stale` flag. Displaying it needs the frontend |
+| T1.2 permanent `0.00%` | **Partial** | Backend fixed. Rendered pages now show "No prior close to compare" instead of `0.00%`; the Next-served pages still print it |
+| T1.3 no timestamp | **Partial** | API returns feed-fetch `updated_at` + `feed_stale`. Rendered pages display it (`Updated: 9 Sep 2026, 14:20 GST`); Next-served pages do not |
 | T1.4 freshness claims | **Partial / Owner** | Removed from all 15 static pages. Homepage/`/about`/`/contact` blocked. True cadence lives in the Prefect repo |
-| T1.5 Chennai = national rate | Blocked | Confirmed measured. Needs the city page source |
+| T1.5 Chennai = national rate | **Done** | `/chennai-gold-prices` is rendered and states plainly that the figure is the national India rate |
 | T1.6 fake USD demo | Blocked | Needs homepage source |
 
 ### Phase 2 — Indexability
 
 | Task | Status | Notes |
 |---|---|---|
-| T2.1 duplicate emirate pages | Blocked | Confirmed: identical 5 AED prices across all four |
-| T2.2 state pages orphaned | **Partial** | Moot short-term (now `noindex`). Shared layout / index page / breadcrumbs blocked |
-| T2.3 two templates | Blocked | Needs the app to absorb the static files |
+| T2.1 duplicate emirate pages | **Done** | All four rendered; the shared AED rate is labelled as federal rather than presented as four local rates |
+| T2.2 state pages orphaned | **Done** | Rendered pages share a layout, carry `BreadcrumbList`, and cross-link to every sibling plus the hub |
+| T2.3 two templates | **Partial** | Resolved for Oman: one renderer now serves both the country page and the `.html` city URLs |
 | T2.4 trailing slash | Blocked | Needs `next.config` + link components |
 | T2.5 no hreflang | Blocked | Confirmed 0 hreflang tags sitewide |
 | T2.6 `/signup` indexable | Blocked | **Widen this task:** `/login`, `/account`, `/admin`, `/portfolio` are also `index, follow` |
-| T2.7 hardcoded `lastmod` *(new)* | Blocked | Needs `sitemap.ts` |
-| T2.8 news articles missing from sitemap *(new)* | Blocked | Needs `sitemap.ts` |
+| T2.7 hardcoded `lastmod` *(new)* | **Done** | `/sitemap.xml` is served by the backend from the real newest `gold_rates.created_at` |
+| T2.8 news articles missing from sitemap *(new)* | **Deliberately open** | Entries are built and gated behind `PUBLISH_NEWS_IN_SITEMAP`. Every article canonicalises to `/gold-news-today/undefined`, a soft 404, so listing them would submit 496 URLs claiming to be one contentless page. Enable with the template fix |
 
 ### Phase 3 — On-page
 
 | Task | Status | Notes |
 |---|---|---|
-| T3.1 titles > 60 chars | **Partial** | Fixed on all 15 static pages (max now 44). 9 app pages blocked. CI lint added |
-| T3.2 descriptions > 155 | **Partial** | Fixed on all 15 (max now 137). App pages blocked. CI lint added |
+| T3.1 titles > 60 chars | **Partial** | Static pages max 44; rendered pages max 52 and now carry the live rate + date (T4.8). 9 app pages blocked. CI lint covers both |
+| T3.2 descriptions > 155 | **Partial** | Static max 137, rendered max 113 and figure-led. App pages blocked. CI lint covers both |
 | T3.3 Open Graph defects | **Partial** | Static pages: absolute `og:image`, page-specific title/description, `og:site_name`/`og:type`/`og:locale`, full Twitter card. **New finding:** all 6 app rate pages have *no* `og:image` at all — blocked |
 | T3.4 FAQ answers absent | Blocked | Root cause identified (T0.7). Fix needs the accordion component |
 | T3.5 homepage H1 | Blocked | |
@@ -180,7 +197,7 @@ without district-varying data would add 14 thin duplicates.
 
 | Task | Status | Notes |
 |---|---|---|
-| T5.1 structured data | **Recon done**, implementation blocked | It is "add", not "fix". Note the existing `FAQPage` markup is currently a guideline violation |
+| T5.1 structured data | **Partial** | `Dataset` + `BreadcrumbList` now emitted on every rendered page, and only when there is a verified figure behind it. Next-served pages still have none |
 | T5.2 named author | **Owner** | Do not invent a person |
 | T5.3 data source | **Answerable now** | It is `gulfnews.com/gold-forex` — see the caveat above before publishing it |
 | T5.4 contact details | **Owner** | |
@@ -199,7 +216,7 @@ without district-varying data would add 14 thin duplicates.
 | Task | Status | Notes |
 |---|---|---|
 | T7.1 price sanity guardrails | **Done** | `backend/rate_utils.py`: zero/negative prices dropped, 22K/24K ratio band, state-vs-national 2% divergence, feed staleness. 33 unit tests |
-| T7.2 SEO regression tests in CI | **Partial** | Implemented and wired into CI for the 15 static pages (24 tests). App-page equivalents need the source |
+| T7.2 SEO regression tests in CI | **Partial** | 108 tests: 11 static pages + the rendered pages (`tests/test_rate_pages.py`, 47 tests, mutation-checked). App-page equivalents need the source |
 | T7.3 Search Console | **Owner** | Verification token is in place (`google28bb29abf1f4f276.html`, now in the repo) |
 
 ---
@@ -208,10 +225,14 @@ without district-varying data would add 14 thin duplicates.
 
 | | Count |
 |---|---|
-| Done | 12 |
-| Partial | 8 |
-| Blocked on missing frontend source | 26 |
+| Done | 14 |
+| Partial | 9 |
+| Blocked on missing frontend source | 23 |
 | Needs owner input | 7 |
+
+Three tasks moved out of *Blocked* on 9 Sep (T2.3, T2.7, T2.8) and two more advanced, all by
+routing the pages to a renderer that does deploy from this repo rather than by unblocking the
+frontend. The remaining 23 still need that source.
 
 The gating item — T1.1, the 10%-wrong prices on 15 indexed pages — is fully fixed and
 covered by tests. Everything else that does not require the missing frontend source is

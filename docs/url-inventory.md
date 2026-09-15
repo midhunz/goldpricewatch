@@ -117,6 +117,12 @@ none of them is a real state rate.
 wrong Indian state figure. Oman trades in OMR. And all four are **true orphans** — in the
 sitemap, linked from nowhere on the site.
 
+> **Correction, 9 Sep 2026 — the orphan claim is wrong.** The live `/oman-gold-prices` links
+> to all four under a "Regional Gold Rates Across Oman" heading; the 10-page inbound sample
+> did not include it. They were never orphans, and Search Console shows all four ranking at
+> ~9.0 — the best positions on the domain. They are now served by `backend/rate_pages.py`
+> with live OMR prices at the same URLs. See `docs/search-console-2026-09.md`.
+
 ---
 
 ## True orphans (zero inbound internal links)

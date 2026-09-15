@@ -47,7 +47,9 @@ export default function TrendsPage() {
 
     // State
     const [selectedRegions, setSelectedRegions] = useState<string[]>(["India"]);
-    const [selectedPurity, setSelectedPurity] = useState<string>("");
+    // Holds only an explicit user pick; the effective purity is derived below,
+    // so no effect has to write it back (react-hooks/set-state-in-effect).
+    const [purityChoice, setPurityChoice] = useState<string>("");
     const [duration, setDuration] = useState<string>("7"); // days
     const [regionDataList, setRegionDataList] = useState<RegionData[]>([]);
     const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
@@ -74,21 +76,14 @@ export default function TrendsPage() {
         return commonPurities;
     }, [currentRates, selectedRegions]);
 
-    // Set defaults
-    useEffect(() => {
-        if (regions.length > 0 && selectedRegions.length === 0) {
-            setSelectedRegions(["India"]);
+    // The user's pick wins while it is still offered by the selected regions;
+    // otherwise fall back to 22K, else the first purity available.
+    const selectedPurity = useMemo(() => {
+        if (purityChoice && availablePurities.includes(purityChoice)) {
+            return purityChoice;
         }
-    }, [regions]);
-
-    useEffect(() => {
-        if (availablePurities.length > 0) {
-            if (!selectedPurity || !availablePurities.includes(selectedPurity)) {
-                const defaultPurity = availablePurities.find(p => p.includes("22")) || availablePurities[0];
-                setSelectedPurity(defaultPurity);
-            }
-        }
-    }, [availablePurities]);
+        return availablePurities.find(p => p.includes("22")) || availablePurities[0] || "";
+    }, [purityChoice, availablePurities]);
 
     // Fetch History for all selected regions
     useEffect(() => {
@@ -138,7 +133,7 @@ export default function TrendsPage() {
 
         // Build chart data
         return timestamps.map(timestamp => {
-            const point: any = {
+            const point: Record<string, string | number> = {
                 timestamp,
                 date: new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
                 fullDate: new Date(timestamp).toLocaleString()
@@ -159,10 +154,13 @@ export default function TrendsPage() {
     const toggleRegion = (region: string) => {
         setSelectedRegions(prev => {
             if (prev.includes(region)) {
-                return prev.filter(r => r !== region);
-            } else {
-                return [...prev, region];
+                // Refuse to drop the last one. The chart has nothing to plot
+                // with an empty selection, which is what the old "snap back to
+                // India" effect existed to prevent -- enforcing it here keeps
+                // the rule in the event handler instead of in a render effect.
+                return prev.length === 1 ? prev : prev.filter(r => r !== region);
             }
+            return [...prev, region];
         });
     };
 
@@ -221,7 +219,7 @@ export default function TrendsPage() {
 
                             <div className="space-y-2">
                                 <label className="text-sm font-medium">Purity</label>
-                                <Select value={selectedPurity} onValueChange={setSelectedPurity}>
+                                <Select value={selectedPurity} onValueChange={setPurityChoice}>
                                     <SelectTrigger>
                                         <SelectValue placeholder="Select Purity" />
                                     </SelectTrigger>

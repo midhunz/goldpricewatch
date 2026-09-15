@@ -77,7 +77,7 @@ export default function Home() {
       {/* Live Rates Section */}
       <section className="space-y-8" ref={tabsRef}>
         <div className="flex flex-col items-center justify-center space-y-2">
-          <h2 className="text-3xl font-bold tracking-tight">Today's Rates</h2>
+          <h2 className="text-3xl font-bold tracking-tight">Today&apos;s Rates</h2>
           <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/50 px-3 py-1 rounded-full">
             <span>Source: Gulf News</span>
             {lastUpdated && (

@@ -1,20 +1,23 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useMemo } from "react";
 import { useGoldRates } from "@/hooks/useGoldRates";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, Calculator, RefreshCcw } from "lucide-react";
+import { Loader2, Calculator } from "lucide-react";
 
 export default function CalculatorPage() {
     const { data: rates, isLoading } = useGoldRates();
 
-    // State
-    const [selectedRegion, setSelectedRegion] = useState<string>("");
-    const [selectedPurity, setSelectedPurity] = useState<string>("");
+    // State. These hold what the user explicitly picked and stay empty until
+    // they do; the effective region and purity are derived below. Storing the
+    // defaults in state instead meant an effect had to write them on every data
+    // load, which is a cascading render (react-hooks/set-state-in-effect).
+    const [regionChoice, setRegionChoice] = useState<string>("");
+    const [purityChoice, setPurityChoice] = useState<string>("");
     const [weight, setWeight] = useState<number>(10);
     const [stoneWeight, setStoneWeight] = useState<number>(0);
     const [makingChargesPercent, setMakingChargesPercent] = useState<number>(10);
@@ -26,6 +29,9 @@ export default function CalculatorPage() {
         return Array.from(new Set(rates.map(r => r.region)));
     }, [rates]);
 
+    // Defaults to India once rates arrive, until the user picks otherwise.
+    const selectedRegion = regionChoice || (regions.length > 0 ? "India" : "");
+
     const availablePurities = useMemo(() => {
         if (!rates || !selectedRegion) return [];
         return rates
@@ -33,25 +39,19 @@ export default function CalculatorPage() {
             .map(r => r.purity);
     }, [rates, selectedRegion]);
 
+    // The user's pick wins while it is still offered for the current region;
+    // otherwise fall back to 22K, else the first purity available.
+    const selectedPurity = useMemo(() => {
+        if (purityChoice && availablePurities.includes(purityChoice)) {
+            return purityChoice;
+        }
+        return availablePurities.find(p => p.includes("22")) || availablePurities[0] || "";
+    }, [purityChoice, availablePurities]);
+
     const currentRate = useMemo(() => {
         if (!rates || !selectedRegion || !selectedPurity) return null;
         return rates.find(r => r.region === selectedRegion && r.purity === selectedPurity);
     }, [rates, selectedRegion, selectedPurity]);
-
-    // Set defaults when data loads
-    useEffect(() => {
-        if (regions.length > 0 && !selectedRegion) {
-            setSelectedRegion("India"); // Default to India
-        }
-    }, [regions]);
-
-    useEffect(() => {
-        if (availablePurities.length > 0) {
-            // Default to 22K if available, else first option
-            const defaultPurity = availablePurities.find(p => p.includes("22")) || availablePurities[0];
-            setSelectedPurity(defaultPurity);
-        }
-    }, [availablePurities]);
 
     // Helper to parse price string
     const parsePrice = (priceStr: string) => {
@@ -108,7 +108,7 @@ export default function CalculatorPage() {
                     <CardContent className="space-y-6">
                         <div className="space-y-2">
                             <Label>Region</Label>
-                            <Select value={selectedRegion} onValueChange={setSelectedRegion}>
+                            <Select value={selectedRegion} onValueChange={setRegionChoice}>
                                 <SelectTrigger>
                                     <SelectValue placeholder="Select Region" />
                                 </SelectTrigger>
@@ -122,7 +122,7 @@ export default function CalculatorPage() {
 
                         <div className="space-y-2">
                             <Label>Purity</Label>
-                            <Select value={selectedPurity} onValueChange={setSelectedPurity}>
+                            <Select value={selectedPurity} onValueChange={setPurityChoice}>
                                 <SelectTrigger>
                                     <SelectValue placeholder="Select Purity" />
                                 </SelectTrigger>

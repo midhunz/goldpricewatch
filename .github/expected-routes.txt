@@ -7,6 +7,11 @@
 # the rest. See docs/BLOCKED.md.
 #
 # When a route is legitimately removed, delete its line in the same commit.
+#
+# /oman-gold-prices is still listed even though Caddy now answers it from the
+# backend renderer (backend/rate_pages.py), not from Next. It stays because the
+# route has not been removed, only moved: if the @rendered matcher were ever
+# taken out of the Caddyfile, Next would have to serve it again.
 /
 /about
 /abu-dhabi-gold-prices

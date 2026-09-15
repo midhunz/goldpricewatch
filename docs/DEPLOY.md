@@ -54,7 +54,7 @@ This is what lets the T1.1 hotfix ship today without touching the frontend.
 | `DOCKERHUB_TOKEN` | Docker Hub access token — **not** the account password |
 | `DROPLET_HOST` | Droplet IP or hostname |
 | `DROPLET_USER` | SSH user (`root`, or a deploy user) |
-| `DROPLET_SSH_KEY` | Private key, full PEM including the BEGIN/END lines |
+| `DROPLET_PASSWORD` | SSH password for `DROPLET_USER` — the droplet does not accept key auth |
 
 ### 2. Repository variables
 
