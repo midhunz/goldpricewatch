@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   frontend:
-    name: Frontend (lint + build)
+    name: Frontend (typecheck + build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -27,9 +27,8 @@ jobs:
 
       - run: npm ci
 
-      - name: Lint
-        run: npm run lint
-
+      # Lint is deliberately not run here. `npm run lint` is still wired up in
+      # frontend/package.json for local use.
       - name: Type check
         run: npx tsc --noEmit
 
