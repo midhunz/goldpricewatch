@@ -345,11 +345,48 @@ jobs:
             #    unreachable: Caddy would keep handing /india-gold-prices and
             #    friends to Next, and the live prices, date-stamped titles and
             #    real sitemap lastmod would never be served.
+            #    Anchored to the /gold-rates handle, NOT to "the first handle /*".
+            #    The deployed Caddyfile carries a www redirect block ahead of the
+            #    apex block; a catch-all inside it swallows the insertion, the
+            #    matcher lands in the redirect block, the canonical site never
+            #    sees it, and Next keeps answering. That is exactly what happened
+            #    on the first successful deploy: /gold-rates/* moved to the
+            #    backend while /oman-gold-prices and /sitemap.xml kept returning
+            #    X-Powered-By: Next.js. The /gold-rates handle is known to sit in
+            #    the canonical block, so it is the reliable anchor.
+            #
+            #    Any existing @rendered is stripped and re-inserted rather than
+            #    left alone, so a misplaced one from an earlier run is repaired
+            #    instead of being skipped forever.
             if grep -q '@rendered' Caddyfile; then
-              echo "Caddyfile: an @rendered matcher already exists, leaving alone"
-            else
               awk '
-                !ins && /handle[[:space:]]+\/\*[[:space:]]*\{/ {
+                /^[[:space:]]*@rendered[[:space:]]/ { inmatch = 1 }
+                inmatch {
+                  # Continuation test by substr, not by regex: in gawk a regex
+                  # literal of /\\[[:space:]]*$/ matches nothing at all, and
+                  # /[\][[:space:]]*$/ matches every line. Both fail silently,
+                  # which would leave the matcher half-stripped.
+                  if (substr($0, length($0), 1) == "\\") { next }
+                  inmatch = 0; next
+                }
+                /^[[:space:]]*handle[[:space:]]+@rendered[[:space:]]*\{/ { inblk = 1; next }
+                inblk && /^[[:space:]]*\}[[:space:]]*$/ { inblk = 0; next }
+                inblk { next }
+                { print }
+              ' Caddyfile > Caddyfile.new
+              mv Caddyfile.new Caddyfile
+              echo "Caddyfile: stripped an existing @rendered matcher for re-placement"
+              changed=1
+            fi
+
+            if ! grep -q 'handle /gold-rates/\*' Caddyfile; then
+              echo "::error::no 'handle /gold-rates/*' block to anchor @rendered against"
+              exit 1
+            fi
+
+            {
+              awk '
+                !ins && /handle[[:space:]]+\/gold-rates\/\*/ {
                   print "    @rendered path /oman-gold-prices \\"
                   print "                   /uae-gold-prices \\"
                   print "                   /qatar-gold-prices \\"
@@ -370,16 +407,18 @@ jobs:
                   print "    handle @rendered {"
                   print "        reverse_proxy backend:8000"
                   print "    }"
-                  print ""
                   ins = 1
                 }
                 { print }
                 END { if (!ins) exit 3 }
               ' Caddyfile > Caddyfile.new
-              echo "Caddyfile: inserted @rendered matcher before the catch-all"
-              mv Caddyfile.new Caddyfile
-              changed=1
-            fi
+            }
+            mv Caddyfile.new Caddyfile
+            echo "Caddyfile: inserted @rendered ahead of the /gold-rates handle"
+            changed=1
+
+            echo "--- rate-page routing as it now stands ---"
+            grep -n -A3 '@rendered\|handle /gold-rates/\*\|handle /\*' Caddyfile || true
 
             if [ "$changed" -eq 0 ]; then
               echo "Server already configured; nothing to change."
